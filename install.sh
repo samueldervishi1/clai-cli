@@ -38,10 +38,10 @@ fi
 
 # Install dependencies and build
 echo "  Installing dependencies..."
-$PKG_MGR install --silent 2>/dev/null
+$PKG_MGR install 2>/dev/null
 
 echo "  Building..."
-$PKG_MGR run build --silent 2>/dev/null
+$PKG_MGR run build 2>/dev/null
 
 # Make entry point executable
 chmod +x dist/index.js

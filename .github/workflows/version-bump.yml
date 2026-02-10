@@ -19,15 +19,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bump minor version
+      - name: Bump version
         run: |
           # Read current version from package.json
           CURRENT=$(node -p "require('./package.json').version")
           echo "Current version: $CURRENT"
 
-          # Split into parts and bump minor
+          # Split into parts and bump patch (0.6.0 → 0.6.1)
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          NEW_VERSION="$MAJOR.$((MINOR + 1)).0"
+          NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
           echo "New version: $NEW_VERSION"
 
           # Update package.json
