@@ -19,8 +19,7 @@ import {
 } from "./lib/config.js";
 import { saveConversation, loadConversation, listConversations } from "./lib/conversations.js";
 import type { ChatMessage, AppState, TokenUsage, MessageSegment, ChatImage } from "./lib/types.js";
-
-const VERSION = "0.5.0";
+import { VERSION } from "./lib/version.js";
 
 const HELP_TEXT = `Available commands:
   /clear    — Clear conversation history and free up context

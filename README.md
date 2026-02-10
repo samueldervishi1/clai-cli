@@ -6,20 +6,31 @@ A minimal terminal chat powered by the Claude API.
 ![TypeScript](https://img.shields.io/badge/typescript-strict-blue)
 ![License](https://img.shields.io/badge/license-MIT-gray)
 
-## Setup
+## Install
 
 ```bash
-pnpm install
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
-pnpm start
+curl -fsSL https://raw.githubusercontent.com/samueldervishi1/clai-cli/master/install.sh | bash
 ```
+
+Requires Node.js 22+ and pnpm (or npm). On first run, Clai will ask for your Anthropic API key and save it to `~/.config/clai/.env`.
 
 ## Usage
 
 ```bash
-pnpm start          # interactive chat
-pnpm dev            # watch mode
-echo "hi" | pnpm start   # pipe input
+clai                        # interactive chat
+echo "explain this" | clai  # pipe input
+```
+
+## Dev
+
+```bash
+git clone https://github.com/samueldervishi1/clai-cli.git
+cd clai-cli
+pnpm install
+pnpm start        # run from source
+pnpm dev           # watch mode
+pnpm build         # compile to dist/
+pnpm format        # prettier
 ```
 
 ## Commands
@@ -51,10 +62,7 @@ echo "hi" | pnpm start   # pipe input
 - Pipe/stdin support
 - Markdown rendering in terminal
 - Scrollable message history (arrow keys)
-
-## Tech
-
-Node.js, TypeScript, Ink (React for CLIs), Anthropic SDK.
+- First-run API key setup (no manual .env needed)
 
 ## License
 

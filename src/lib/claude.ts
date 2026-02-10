@@ -8,7 +8,11 @@ import type {
 import { TOOL_DEFINITIONS, executeTool } from "./tools.js";
 import type { ChatMessage, TokenUsage, StreamEvent, ChatImage } from "./types.js";
 
-const client = new Anthropic();
+let _client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_client) _client = new Anthropic();
+  return _client;
+}
 
 export const MODELS = {
   haiku: "claude-haiku-4-5-20251001",
@@ -65,7 +69,7 @@ export async function* streamChat(
   let finalText = "";
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const stream = await client.messages.create({
+    const stream = await getClient().messages.create({
       model,
       max_tokens: maxTokens,
       messages: apiMessages,

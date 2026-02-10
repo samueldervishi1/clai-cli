@@ -1,0 +1,90 @@
+name: Version Bump
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  bump:
+    # Skip if the last commit was a version bump (prevent infinite loop)
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump minor version
+        run: |
+          # Read current version from package.json
+          CURRENT=$(node -p "require('./package.json').version")
+          echo "Current version: $CURRENT"
+
+          # Split into parts and bump minor
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEW_VERSION="$MAJOR.$((MINOR + 1)).0"
+          echo "New version: $NEW_VERSION"
+
+          # Update package.json
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
+            pkg.version = '$NEW_VERSION';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          # Update src/lib/version.ts
+          echo "export const VERSION = \"$NEW_VERSION\";" > src/lib/version.ts
+
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Build release notes
+        run: |
+          # Get commits since last tag (or all if no tags yet)
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s" --no-merges)
+          else
+            COMMITS=$(git log "$LAST_TAG"..HEAD --pretty=format:"- %s" --no-merges)
+          fi
+
+          # Build release notes
+          cat > /tmp/release-notes.md << EOF
+          ## What's Changed
+
+          $COMMITS
+
+          ## Install / Update
+
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/samueldervishi1/clai-cli/master/install.sh | bash
+          \`\`\`
+          EOF
+
+          echo "RELEASE_NOTES<<EOFNOTES" >> $GITHUB_ENV
+          cat /tmp/release-notes.md >> $GITHUB_ENV
+          echo "EOFNOTES" >> $GITHUB_ENV
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json src/lib/version.ts
+          git diff --staged --quiet && echo "No changes" && exit 0
+          git commit -m "v${{ env.NEW_VERSION }} [skip ci]"
+          git tag "v${{ env.NEW_VERSION }}"
+          git push
+          git push --tags
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ env.NEW_VERSION }}" \
+            --title "v${{ env.NEW_VERSION }}" \
+            --notes-file /tmp/release-notes.md

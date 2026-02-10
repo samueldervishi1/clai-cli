@@ -2,6 +2,7 @@
 
 import { render } from "ink";
 import { App } from "./App.js";
+import { ensureApiKey } from "./lib/api-key.js";
 
 const GOODBYES = [
   "See you later!",
@@ -27,7 +28,9 @@ async function readPipedInput(): Promise<string | undefined> {
   return text || undefined;
 }
 
+const isPiped = !process.stdin.isTTY;
 const pipedInput = await readPipedInput();
+await ensureApiKey(isPiped);
 
 const app = render(<App initialMessage={pipedInput} />, {
   exitOnCtrlC: false,
