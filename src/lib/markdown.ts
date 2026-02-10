@@ -1,11 +1,18 @@
-import { Marked } from "marked";
+import { marked } from "marked";
 import TerminalRenderer from "marked-terminal";
 
-const marked = new Marked();
-marked.setOptions({ renderer: new TerminalRenderer() as never });
+marked.setOptions({
+  renderer: new TerminalRenderer({
+    showSectionPrefix: false,
+  }) as never,
+});
 
 export function renderMarkdown(text: string): string {
-  const rendered = marked.parse(text);
-  if (typeof rendered !== "string") return text;
-  return rendered.replace(/\n$/, "");
+  try {
+    const rendered = marked.parse(text);
+    if (typeof rendered !== "string") return text;
+    return rendered.replace(/^-{10,}$/gm, "─".repeat(40)).replace(/\n$/, "");
+  } catch {
+    return text;
+  }
 }

@@ -7,35 +7,65 @@ const CWD = process.cwd();
 // Blocked directories — never allow access to these
 const BLOCKED_PATHS = [
   // System dirs (Linux/macOS)
-  "/etc", "/root", "/var", "/sys", "/proc", "/boot",
-  "/usr", "/sbin", "/bin", "/lib", "/lib64", "/opt",
-  "/dev", "/run", "/tmp", "/snap", "/mnt", "/media",
+  "/etc",
+  "/root",
+  "/var",
+  "/sys",
+  "/proc",
+  "/boot",
+  "/usr",
+  "/sbin",
+  "/bin",
+  "/lib",
+  "/lib64",
+  "/opt",
+  "/dev",
+  "/run",
+  "/tmp",
+  "/snap",
+  "/mnt",
+  "/media",
   // macOS specific
-  "/System", "/Library", "/Applications", "/Volumes",
-  "/private/etc", "/private/var",
+  "/System",
+  "/Library",
+  "/Applications",
+  "/Volumes",
+  "/private/etc",
+  "/private/var",
 ];
 
 // Blocked directories inside home
 const BLOCKED_HOME_DIRS = [
-  ".ssh", ".gnupg", ".gpg", ".aws", ".azure", ".gcloud",
-  ".docker", ".kube", ".config/gcloud", ".config/gh",
-  ".password-store", ".local/share/keyrings",
-  ".bashrc", ".zshrc", ".profile",
+  ".ssh",
+  ".gnupg",
+  ".gpg",
+  ".aws",
+  ".azure",
+  ".gcloud",
+  ".docker",
+  ".kube",
+  ".config/gcloud",
+  ".config/gh",
+  ".password-store",
+  ".local/share/keyrings",
+  ".bashrc",
+  ".zshrc",
+  ".profile",
 ];
 
 // Blocked file patterns — never read or write these
 const BLOCKED_PATTERNS = [
-  /\.env($|\.)/,          // .env, .env.local, .env.production
-  /\.pem$/,               // SSL certificates / private keys
-  /\.key$/,               // Private keys
-  /\.p12$/,               // PKCS12 certificates
-  /id_rsa/,               // SSH keys
-  /id_ed25519/,           // SSH keys
-  /credentials/i,         // Credential files
-  /secrets?\.ya?ml$/i,    // K8s secrets
-  /\.npmrc$/,             // npm auth tokens
-  /\.netrc$/,             // network credentials
-  /\.git\/config$/,       // git config (may contain tokens)
+  /\.env($|\.)/, // .env, .env.local, .env.production
+  /\.pem$/, // SSL certificates / private keys
+  /\.key$/, // Private keys
+  /\.p12$/, // PKCS12 certificates
+  /id_rsa/, // SSH keys
+  /id_ed25519/, // SSH keys
+  /credentials/i, // Credential files
+  /secrets?\.ya?ml$/i, // K8s secrets
+  /\.npmrc$/, // npm auth tokens
+  /\.netrc$/, // network credentials
+  /\.git\/config$/, // git config (may contain tokens)
 ];
 
 // Max file size to read (500KB)
@@ -55,7 +85,10 @@ export function validatePath(filePath: string): SandboxResult {
   if (relPath.startsWith("..") || resolve(absPath) !== absPath.replace(/\/$/, "")) {
     // Re-check: is it within CWD?
     if (!absPath.startsWith(CWD)) {
-      return { allowed: false, reason: `Access denied: path is outside working directory (${CWD})` };
+      return {
+        allowed: false,
+        reason: `Access denied: path is outside working directory (${CWD})`,
+      };
     }
   }
 
@@ -98,7 +131,10 @@ export function validateFileSize(filePath: string): SandboxResult {
     const stat = statSync(absPath);
     if (stat.size > MAX_FILE_SIZE) {
       const sizeKB = Math.round(stat.size / 1024);
-      return { allowed: false, reason: `File too large: ${sizeKB}KB (max ${MAX_FILE_SIZE / 1024}KB)` };
+      return {
+        allowed: false,
+        reason: `File too large: ${sizeKB}KB (max ${MAX_FILE_SIZE / 1024}KB)`,
+      };
     }
     return { allowed: true };
   } catch {

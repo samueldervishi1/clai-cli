@@ -1,4 +1,4 @@
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { theme } from "../lib/theme.js";
 import { DEFAULT_MODEL } from "../lib/claude.js";
 
@@ -8,22 +8,23 @@ interface HeaderProps {
 }
 
 export function Header({ version, model = DEFAULT_MODEL }: HeaderProps) {
-  const cwd = process.cwd();
-  const shortCwd = cwd.replace(process.env.HOME ?? "", "~");
+  const { stdout } = useStdout();
+  const termWidth = Math.max((stdout?.columns ?? 80) - 2, 10);
   const modelDisplay = model.includes("haiku") ? "Haiku 4.5" : "Sonnet 4.5";
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Box>
-        <Text bold color={theme.accent}>Clai</Text>
+      <Box justifyContent="center">
+        <Text bold color={theme.accent}>
+          Clai
+        </Text>
         <Text color={theme.dim}> v{version}</Text>
-        <Text color={theme.dim}>  {modelDisplay}</Text>
-        <Text color={theme.dim}>  {shortCwd}</Text>
+        <Text color={theme.dim}> · {modelDisplay}</Text>
       </Box>
-      <Text color={theme.system}>
-        Type /help for commands · /clear to reset · /tokens for usage
-      </Text>
-      <Text color={theme.border}>{"─".repeat(80)}</Text>
+      <Box justifyContent="center">
+        <Text color={theme.dim}>/help · /clear · /model · /tokens · Ctrl+C exit</Text>
+      </Box>
+      <Text color={theme.border}>{"─".repeat(termWidth)}</Text>
     </Box>
   );
 }

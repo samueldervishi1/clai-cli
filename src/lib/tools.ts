@@ -48,7 +48,8 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         },
         path: {
           type: "string",
-          description: "Directory to search in, relative to working directory (default: current directory)",
+          description:
+            "Directory to search in, relative to working directory (default: current directory)",
         },
       },
       required: ["pattern"],
@@ -80,10 +81,7 @@ export interface ToolResult {
   isError: boolean;
 }
 
-export function executeTool(
-  name: string,
-  input: Record<string, unknown>,
-): ToolResult {
+export function executeTool(name: string, input: Record<string, unknown>): ToolResult {
   switch (name) {
     case "read_file":
       return readFile(input.path as string);

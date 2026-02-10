@@ -6,11 +6,16 @@ export interface Command {
 export const COMMANDS: Command[] = [
   { name: "/clear", description: "Clear conversation history and free up context" },
   { name: "/compact", description: "Summarize conversation to save context" },
+  { name: "/config", description: "Show config. /config save to persist settings" },
   { name: "/copy", description: "Copy last Clai response to clipboard" },
+  { name: "/edit", description: "Open $EDITOR for multi-line input" },
   { name: "/exit", description: "Quit Clai" },
   { name: "/help", description: "Show available commands" },
+  { name: "/image", description: "Send an image. Usage: /image <path> [question]" },
+  { name: "/load", description: "Load a saved conversation. /load to list" },
   { name: "/model", description: "Switch model (Haiku 4.5 ↔ Sonnet 4.5)" },
-  { name: "/save", description: "Save conversation to a file" },
+  { name: "/preset", description: "System prompt presets. /preset <name> or /preset save <name>" },
+  { name: "/save", description: "Save conversation. /save [name]" },
   { name: "/system", description: "Set a system prompt. Usage: /system <prompt>" },
   { name: "/tokens", description: "Show token usage and cost details" },
 ];

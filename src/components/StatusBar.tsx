@@ -10,14 +10,14 @@ interface StatusBarProps {
 }
 
 export function StatusBar({ messageCount, appState, error, totalUsage }: StatusBarProps) {
-  const costDisplay = totalUsage.totalCost > 0
-    ? `$${totalUsage.totalCost.toFixed(4)}`
-    : "";
+  const costDisplay = totalUsage.totalCost > 0 ? `$${totalUsage.totalCost.toFixed(4)}` : "";
 
   return (
     <Box justifyContent="space-between" paddingX={1}>
       {error ? (
-        <Text color={theme.error}>{error}</Text>
+        <Text color={theme.error} wrap="truncate">
+          {error}
+        </Text>
       ) : appState === "streaming" ? (
         <Text color={theme.accent}>Streaming response...</Text>
       ) : (

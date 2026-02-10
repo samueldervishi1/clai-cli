@@ -1,6 +1,7 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { execSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { resolve, extname } from "node:path";
 import { Box, useApp, useInput, useStdout } from "ink";
 import { Header } from "./components/Header.js";
 import { MessageList } from "./components/MessageList.js";
@@ -9,45 +10,93 @@ import { StatusBar } from "./components/StatusBar.js";
 import { CommandSuggestions } from "./components/CommandSuggestions.js";
 import { streamChat, MODELS, MODEL_DISPLAY, DEFAULT_MODEL } from "./lib/claude.js";
 import { filterCommands } from "./lib/commands.js";
-import type { ChatMessage, AppState, TokenUsage, ToolCallInfo } from "./lib/types.js";
+import {
+  loadConfig,
+  saveConfig,
+  getConfigPath,
+  addLifetimeSpend,
+  getLifetimeSpend,
+} from "./lib/config.js";
+import { saveConversation, loadConversation, listConversations } from "./lib/conversations.js";
+import type { ChatMessage, AppState, TokenUsage, MessageSegment, ChatImage } from "./lib/types.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.5.0";
 
 const HELP_TEXT = `Available commands:
   /clear    — Clear conversation history and free up context
   /compact  — Summarize conversation to save context
+  /config   — Show config. /config save to persist settings
   /copy     — Copy last Clai response to clipboard
+  /edit     — Open $EDITOR for multi-line input
   /exit     — Quit Clai
   /help     — Show this help message
+  /image    — Send an image. Usage: /image <path> [question]
+  /load     — Load a saved conversation. /load to list
   /model    — Switch model (Haiku 4.5 ↔ Sonnet 4.5)
-  /save     — Save conversation to a file
+  /preset   — System prompt presets. /preset <name> or /preset save <name>
+  /save     — Save conversation. /save [name]
   /system   — Set a system prompt. Usage: /system <prompt>
   /tokens   — Show token usage and cost details
 
 Clai can also read, search, list, and write files in your working directory.
 Just ask it to look at your code!`;
 
-export function App() {
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+interface AppProps {
+  initialMessage?: string;
+}
+
+export function App({ initialMessage }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const terminalHeight = stdout?.rows ?? 24;
+  const config = useMemo(() => loadConfig(), []);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
-  const [streamingContent, setStreamingContent] = useState("");
+  const [streamSegments, setStreamSegments] = useState<MessageSegment[]>([]);
   const [appState, setAppState] = useState<AppState>("idle");
   const [error, setError] = useState<string | undefined>();
-  const [currentModel, setCurrentModel] = useState<string>(DEFAULT_MODEL);
-  const [systemPrompt, setSystemPrompt] = useState<string | undefined>();
-  const [toolCalls, setToolCalls] = useState<ToolCallInfo[]>([]);
+  const [currentModel, setCurrentModel] = useState<string>(config.defaultModel ?? DEFAULT_MODEL);
+  const [systemPrompt, setSystemPrompt] = useState<string | undefined>(config.systemPrompt);
+  const [scrollOffset, setScrollOffset] = useState(0);
   const [totalUsage, setTotalUsage] = useState<TokenUsage>({
     inputTokens: 0,
     outputTokens: 0,
     totalCost: 0,
   });
 
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    setScrollOffset(0);
+  }, [messages.length]);
+
+  // Handle piped stdin input
+  useEffect(() => {
+    if (!initialMessage) return;
+    handleSubmit(initialMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") {
       exit();
+    }
+    if (appState === "idle") {
+      const scrollUp = key.pageUp || (key.upArrow && !inputValue);
+      const scrollDown = key.pageDown || (key.downArrow && !inputValue);
+      if (scrollUp) {
+        setScrollOffset((prev) => Math.min(prev + 3, Math.max(0, messages.length - 1)));
+      }
+      if (scrollDown) {
+        setScrollOffset((prev) => Math.max(0, prev - 3));
+      }
     }
   });
 
@@ -62,9 +111,7 @@ export function App() {
 
   const copyToClipboard = useCallback((text: string): boolean => {
     try {
-      const cmd = process.platform === "darwin"
-        ? "pbcopy"
-        : "xclip -selection clipboard";
+      const cmd = process.platform === "darwin" ? "pbcopy" : "xclip -selection clipboard";
       execSync(cmd, { input: text });
       return true;
     } catch {
@@ -73,13 +120,16 @@ export function App() {
   }, []);
 
   const runStreamChat = useCallback(
-    async (chatMessages: ChatMessage[], maxTokens?: number) => {
+    async (
+      chatMessages: ChatMessage[],
+      maxTokens?: number,
+    ): Promise<{ text: string; segments: MessageSegment[] } | null> => {
       setAppState("streaming");
-      setStreamingContent("");
-      setToolCalls([]);
+      setStreamSegments([]);
 
       try {
         let fullResponse = "";
+        const localSegments: MessageSegment[] = [];
         const generator = streamChat(chatMessages, currentModel, maxTokens, systemPrompt);
 
         let result = await generator.next();
@@ -88,17 +138,26 @@ export function App() {
 
           if (event.type === "text_delta") {
             fullResponse += event.text;
-            setStreamingContent(fullResponse);
+            const last = localSegments[localSegments.length - 1];
+            if (last?.type === "text") {
+              last.content += event.text;
+            } else {
+              localSegments.push({ type: "text", content: event.text });
+            }
+            setStreamSegments([...localSegments]);
           } else if (event.type === "tool_start") {
-            setToolCalls((prev) => [...prev, event.tool]);
+            localSegments.push({ type: "tool", name: event.tool.name, input: event.tool.input });
+            setStreamSegments([...localSegments]);
           } else if (event.type === "tool_done") {
-            setToolCalls((prev) =>
-              prev.map((t, i) =>
-                i === prev.length - 1
-                  ? { ...t, output: event.tool.output, isError: event.tool.isError }
-                  : t,
-              ),
-            );
+            for (let i = localSegments.length - 1; i >= 0; i--) {
+              const seg = localSegments[i];
+              if (seg?.type === "tool" && !seg.output) {
+                seg.output = event.tool.output;
+                seg.isError = event.tool.isError;
+                break;
+              }
+            }
+            setStreamSegments([...localSegments]);
           }
 
           result = await generator.next();
@@ -110,15 +169,21 @@ export function App() {
           outputTokens: prev.outputTokens + usage.outputTokens,
           totalCost: prev.totalCost + usage.totalCost,
         }));
+        addLifetimeSpend(usage.totalCost);
 
-        return fullResponse;
+        return { text: fullResponse, segments: localSegments };
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
+        let msg: string;
+        if (err && typeof err === "object" && "status" in err && "error" in err) {
+          const apiErr = err as { status: number; error?: { error?: { message?: string } } };
+          msg = apiErr.error?.error?.message ?? `API error (${apiErr.status})`;
+        } else {
+          msg = err instanceof Error ? err.message : String(err);
+        }
         setError(msg);
         return null;
       } finally {
-        setStreamingContent("");
-        setToolCalls([]);
+        setStreamSegments([]);
         setAppState("idle");
       }
     },
@@ -152,10 +217,13 @@ export function App() {
       }
 
       if (trimmed === "/tokens") {
+        const lifetime = getLifetimeSpend();
         const detail = `Token usage this session:
   Input:  ${totalUsage.inputTokens.toLocaleString()} tokens
   Output: ${totalUsage.outputTokens.toLocaleString()} tokens
-  Cost:   $${totalUsage.totalCost.toFixed(4)}`;
+  Cost:   $${totalUsage.totalCost.toFixed(4)}
+
+Lifetime spend: $${lifetime.toFixed(4)}`;
         addSystemMessage(detail);
         return;
       }
@@ -167,7 +235,7 @@ export function App() {
         return;
       }
 
-      if (trimmed.startsWith("/system")) {
+      if (trimmed === "/system" || trimmed.startsWith("/system ")) {
         const prompt = trimmed.slice("/system".length).trim();
         if (!prompt) {
           if (systemPrompt) {
@@ -197,21 +265,234 @@ export function App() {
         return;
       }
 
-      if (trimmed === "/save") {
+      if (trimmed === "/save" || trimmed.startsWith("/save ")) {
         if (messages.length === 0) {
           setError("No messages to save.");
           return;
         }
-        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const filename = `clai-chat-${timestamp}.md`;
-        const content = messages
-          .map((m) => `## ${m.role === "user" ? "You" : "Clai"}\n\n${m.content}`)
-          .join("\n\n---\n\n");
+        const name = trimmed.slice("/save".length).trim() || undefined;
         try {
-          writeFileSync(filename, content);
-          addSystemMessage(`Conversation saved to ${filename}`);
+          const slug = saveConversation(messages, name);
+          addSystemMessage(`Conversation saved as "${slug}". Use /load ${slug} to restore.`);
         } catch {
-          setError(`Failed to save file.`);
+          setError("Failed to save conversation.");
+        }
+        return;
+      }
+
+      if (trimmed === "/load" || trimmed.startsWith("/load ")) {
+        const name = trimmed.slice("/load".length).trim();
+        if (!name) {
+          const convos = listConversations();
+          if (convos.length === 0) {
+            addSystemMessage("No saved conversations. Use /save [name] to save one.");
+          } else {
+            const list = convos
+              .slice(0, 10)
+              .map((c) => `  ${c}`)
+              .join("\n");
+            addSystemMessage(`Saved conversations:\n${list}\n\nUse /load <name> to restore.`);
+          }
+          return;
+        }
+        const loaded = loadConversation(name);
+        if (!loaded) {
+          setError(`Conversation "${name}" not found. Use /load to list.`);
+          return;
+        }
+        setMessages(loaded);
+        setTotalUsage({ inputTokens: 0, outputTokens: 0, totalCost: 0 });
+        addSystemMessage(`Loaded conversation "${name}" (${loaded.length} messages).`);
+        return;
+      }
+
+      if (trimmed === "/config" || trimmed === "/config save") {
+        if (trimmed === "/config save") {
+          const existing = loadConfig();
+          const ok = saveConfig({
+            ...existing,
+            defaultModel: currentModel,
+            systemPrompt,
+          });
+          if (ok) {
+            addSystemMessage(`Config saved to ${getConfigPath()}`);
+          } else {
+            setError("Failed to save config.");
+          }
+          return;
+        }
+        const modelName = MODEL_DISPLAY[currentModel] ?? currentModel;
+        addSystemMessage(`Current settings:
+  Model:   ${modelName}
+  System:  ${systemPrompt ?? "(none)"}
+  Config:  ${getConfigPath()}
+
+Use /config save to persist current settings.`);
+        return;
+      }
+
+      if (trimmed === "/preset" || trimmed.startsWith("/preset ")) {
+        const arg = trimmed.slice("/preset".length).trim();
+        const cfg = loadConfig();
+        const presets = cfg.presets ?? {};
+
+        if (!arg) {
+          const names = Object.keys(presets);
+          if (names.length === 0) {
+            addSystemMessage(
+              "No presets saved. Usage:\n  /preset save <name> — Save current system prompt\n  /preset <name> — Activate a preset",
+            );
+          } else {
+            const list = names.map((n) => `  ${n}: "${presets[n]}"`).join("\n");
+            addSystemMessage(`System prompt presets:\n${list}\n\nUse /preset <name> to activate.`);
+          }
+          return;
+        }
+
+        if (arg.startsWith("save ")) {
+          const name = arg.slice("save ".length).trim();
+          if (!name) {
+            setError("Usage: /preset save <name>");
+            return;
+          }
+          if (!systemPrompt) {
+            setError("No system prompt set. Use /system first.");
+            return;
+          }
+          presets[name] = systemPrompt;
+          cfg.presets = presets;
+          saveConfig(cfg);
+          addSystemMessage(`Preset "${name}" saved.`);
+          return;
+        }
+
+        if (arg === "delete" || arg.startsWith("delete ")) {
+          const name = arg.slice("delete".length).trim();
+          if (!name || !presets[name]) {
+            setError(`Preset "${name}" not found.`);
+            return;
+          }
+          delete presets[name];
+          cfg.presets = presets;
+          saveConfig(cfg);
+          addSystemMessage(`Preset "${name}" deleted.`);
+          return;
+        }
+
+        const preset = presets[arg];
+        if (!preset) {
+          setError(`Preset "${arg}" not found. Use /preset to list.`);
+          return;
+        }
+        setSystemPrompt(preset);
+        addSystemMessage(`Activated preset "${arg}": "${preset}"`);
+        return;
+      }
+
+      if (trimmed.startsWith("/image ")) {
+        const rest = trimmed.slice("/image ".length).trim();
+        const parts = rest.split(/\s+/);
+        const imagePath = parts[0];
+        const question = parts.slice(1).join(" ") || "What's in this image?";
+
+        if (!imagePath) {
+          setError("Usage: /image <path> [question]");
+          return;
+        }
+
+        const absPath = resolve(imagePath);
+        if (!existsSync(absPath)) {
+          setError(`File not found: ${imagePath}`);
+          return;
+        }
+
+        const ext = extname(absPath).toLowerCase();
+        const mediaType = IMAGE_EXTENSIONS[ext];
+        if (!mediaType) {
+          setError(`Unsupported image format: ${ext}. Use .jpg, .png, .gif, or .webp`);
+          return;
+        }
+
+        try {
+          const data = readFileSync(absPath).toString("base64");
+          const image: ChatImage = { data, mediaType };
+
+          const userMessage: ChatMessage = {
+            id: `user-${Date.now()}`,
+            role: "user",
+            content: question,
+            images: [image],
+          };
+          const updatedMessages = [...messages, userMessage];
+          setMessages(updatedMessages);
+
+          const chatResult = await runStreamChat(updatedMessages);
+          if (chatResult) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `assistant-${Date.now()}`,
+                role: "assistant" as const,
+                content: chatResult.text,
+                segments: chatResult.segments,
+              },
+            ]);
+          }
+        } catch {
+          setError("Failed to read image file.");
+        }
+        return;
+      }
+
+      if (trimmed === "/edit") {
+        const tmpFile = `/tmp/clai-edit-${Date.now()}.md`;
+        const editor = process.env.EDITOR ?? process.env.VISUAL ?? "nano";
+        try {
+          writeFileSync(tmpFile, "");
+          if (process.stdin.isTTY) process.stdin.setRawMode(false);
+          process.stdin.pause();
+
+          execSync(`${editor} "${tmpFile}"`, { stdio: "inherit" });
+
+          process.stdin.resume();
+          if (process.stdin.isTTY) process.stdin.setRawMode(true);
+
+          const content = readFileSync(tmpFile, "utf-8").trim();
+          unlinkSync(tmpFile);
+
+          if (!content) {
+            addSystemMessage("Editor closed with no content.");
+            return;
+          }
+
+          const userMessage: ChatMessage = {
+            id: `user-${Date.now()}`,
+            role: "user",
+            content,
+          };
+          const updatedMessages = [...messages, userMessage];
+          setMessages(updatedMessages);
+
+          const chatResult = await runStreamChat(updatedMessages);
+          if (chatResult) {
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `assistant-${Date.now()}`,
+                role: "assistant" as const,
+                content: chatResult.text,
+                segments: chatResult.segments,
+              },
+            ]);
+          }
+        } catch (err) {
+          process.stdin.resume();
+          if (process.stdin.isTTY) process.stdin.setRawMode(true);
+          try {
+            unlinkSync(tmpFile);
+          } catch {}
+          const msg = err instanceof Error ? err.message : String(err);
+          setError(`Editor failed: ${msg}`);
         }
         return;
       }
@@ -231,13 +512,13 @@ export function App() {
           },
         ];
 
-        const fullResponse = await runStreamChat(summaryRequest, 512);
-        if (fullResponse) {
+        const compactResult = await runStreamChat(summaryRequest, 512);
+        if (compactResult) {
           setMessages([
             {
               id: `compact-${Date.now()}`,
               role: "assistant",
-              content: `[Conversation compacted]\n\n${fullResponse}`,
+              content: `[Conversation compacted]\n\n${compactResult.text}`,
             },
           ]);
         }
@@ -259,17 +540,28 @@ export function App() {
       const updatedMessages = [...messages, userMessage];
       setMessages(updatedMessages);
 
-      const fullResponse = await runStreamChat(updatedMessages);
-      if (fullResponse) {
+      const chatResult = await runStreamChat(updatedMessages);
+      if (chatResult) {
         const assistantMessage: ChatMessage = {
           id: `assistant-${Date.now()}`,
           role: "assistant",
-          content: fullResponse,
+          content: chatResult.text,
+          segments: chatResult.segments,
         };
         setMessages((prev) => [...prev, assistantMessage]);
       }
     },
-    [messages, appState, exit, addSystemMessage, totalUsage, currentModel, systemPrompt, copyToClipboard, runStreamChat],
+    [
+      messages,
+      appState,
+      exit,
+      addSystemMessage,
+      totalUsage,
+      currentModel,
+      systemPrompt,
+      copyToClipboard,
+      runStreamChat,
+    ],
   );
 
   return (
@@ -277,9 +569,9 @@ export function App() {
       <Header version={VERSION} model={currentModel} />
       <MessageList
         messages={messages}
-        streamingContent={streamingContent}
+        streamSegments={streamSegments}
         appState={appState}
-        toolCalls={toolCalls}
+        scrollOffset={scrollOffset}
       />
       <CommandSuggestions commands={filterCommands(inputValue)} />
       <InputBar

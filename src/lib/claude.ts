@@ -1,6 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type {
+  RawMessageStreamEvent,
+  ContentBlock,
+  TextBlock,
+  ToolUseBlock,
+} from "@anthropic-ai/sdk/resources/messages/messages";
 import { TOOL_DEFINITIONS, executeTool } from "./tools.js";
-import type { ChatMessage, TokenUsage, StreamEvent } from "./types.js";
+import type { ChatMessage, TokenUsage, StreamEvent, ChatImage } from "./types.js";
 
 const client = new Anthropic();
 
@@ -15,12 +21,12 @@ export const MODEL_DISPLAY: Record<string, string> = {
 };
 
 export const DEFAULT_MODEL = MODELS.haiku;
-export const DEFAULT_MAX_TOKENS = 4096;
+export const DEFAULT_MAX_TOKENS = 8192;
 
 // Pricing per million tokens
 const PRICING: Record<string, { input: number; output: number }> = {
-  [MODELS.haiku]: { input: 0.80, output: 4.00 },
-  [MODELS.sonnet]: { input: 3.00, output: 15.00 },
+  [MODELS.haiku]: { input: 0.8, output: 4.0 },
+  [MODELS.sonnet]: { input: 3.0, output: 15.0 },
 };
 
 export interface StreamResult {
@@ -36,37 +42,93 @@ export async function* streamChat(
   maxTokens: number = DEFAULT_MAX_TOKENS,
   systemPrompt?: string,
 ): AsyncGenerator<StreamEvent, StreamResult, unknown> {
-  let apiMessages: Anthropic.MessageParam[] = messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  let apiMessages: Anthropic.MessageParam[] = messages.map((m) => {
+    if (m.images?.length) {
+      const content: Anthropic.ContentBlockParam[] = m.images.map((img) => ({
+        type: "image" as const,
+        source: {
+          type: "base64" as const,
+          media_type: img.mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+          data: img.data,
+        },
+      }));
+      if (m.content) {
+        content.push({ type: "text" as const, text: m.content });
+      }
+      return { role: m.role, content };
+    }
+    return { role: m.role, content: m.content };
+  });
 
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let finalText = "";
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await client.messages.create({
+    const stream = await client.messages.create({
       model,
       max_tokens: maxTokens,
       messages: apiMessages,
       tools: TOOL_DEFINITIONS,
       ...(systemPrompt ? { system: systemPrompt } : {}),
+      stream: true,
     });
 
-    totalInputTokens += response.usage.input_tokens;
-    totalOutputTokens += response.usage.output_tokens;
+    // Track content blocks as they build up from stream events
+    const contentBlocks: ContentBlock[] = [];
+    let currentToolJson = "";
+    let stopReason: string | null = null;
 
-    // Process content blocks
+    for await (const event of stream as AsyncIterable<RawMessageStreamEvent>) {
+      switch (event.type) {
+        case "message_start":
+          totalInputTokens += event.message.usage.input_tokens;
+          break;
+
+        case "content_block_start":
+          contentBlocks[event.index] = event.content_block;
+          if (event.content_block.type === "tool_use") {
+            currentToolJson = "";
+          }
+          break;
+
+        case "content_block_delta":
+          if (event.delta.type === "text_delta") {
+            finalText += event.delta.text;
+            const textBlock = contentBlocks[event.index];
+            if (textBlock?.type === "text") {
+              (textBlock as TextBlock).text += event.delta.text;
+            }
+            yield { type: "text_delta", text: event.delta.text };
+          } else if (event.delta.type === "input_json_delta") {
+            currentToolJson += event.delta.partial_json;
+          }
+          break;
+
+        case "content_block_stop": {
+          const block = contentBlocks[event.index];
+          if (block?.type === "tool_use") {
+            try {
+              (block as ToolUseBlock).input = JSON.parse(currentToolJson || "{}");
+            } catch {
+              (block as ToolUseBlock).input = {};
+            }
+          }
+          break;
+        }
+
+        case "message_delta":
+          stopReason = event.delta.stop_reason;
+          totalOutputTokens += event.usage.output_tokens;
+          break;
+      }
+    }
+
+    // Execute tool calls after stream completes
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
-    for (const block of response.content) {
-      if (block.type === "text") {
-        for (const char of block.text) {
-          finalText += char;
-          yield { type: "text_delta", text: char };
-        }
-      } else if (block.type === "tool_use") {
+    for (const block of contentBlocks) {
+      if (block.type === "tool_use") {
         const toolInput = block.input as Record<string, unknown>;
 
         yield {
@@ -96,14 +158,19 @@ export async function* streamChat(
     }
 
     // If no tool calls, we're done
-    if (response.stop_reason !== "tool_use" || toolResults.length === 0) {
+    if (stopReason !== "tool_use" || toolResults.length === 0) {
       break;
     }
+
+    // Filter out empty text blocks before sending back to API
+    const assistantContent = contentBlocks.filter(
+      (block) => !(block.type === "text" && !block.text),
+    );
 
     // Append assistant response and tool results for next round
     apiMessages = [
       ...apiMessages,
-      { role: "assistant", content: response.content },
+      { role: "assistant", content: assistantContent },
       { role: "user", content: toolResults },
     ];
   }
