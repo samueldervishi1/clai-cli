@@ -1,6 +1,6 @@
 {
   "name": "clai",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Terminal chat UI powered by Claude API",
   "type": "module",
   "main": "dist/index.js",
