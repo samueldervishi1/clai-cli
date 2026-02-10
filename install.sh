@@ -4,6 +4,32 @@ set -e
 INSTALL_DIR="$HOME/.clai"
 REPO_URL="https://github.com/samueldervishi1/clai-cli.git"
 BIN_DIR="$HOME/.local/bin"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/clai"
+
+# Uninstall mode
+if [ "${1}" = "--uninstall" ] || [ "${1}" = "uninstall" ]; then
+  echo ""
+  echo "  Uninstalling Clai..."
+  echo ""
+  rm -f "$BIN_DIR/clai"
+  rm -rf "$INSTALL_DIR"
+  echo "  Removed $INSTALL_DIR"
+  echo "  Removed $BIN_DIR/clai"
+  if [ -d "$CONFIG_DIR" ]; then
+    read -p "  Remove config and conversations ($CONFIG_DIR)? [y/N] " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      rm -rf "$CONFIG_DIR"
+      echo "  Removed $CONFIG_DIR"
+    else
+      echo "  Kept $CONFIG_DIR"
+    fi
+  fi
+  echo ""
+  echo "  Clai uninstalled."
+  echo ""
+  exit 0
+fi
 
 echo ""
 echo "  Installing Clai..."

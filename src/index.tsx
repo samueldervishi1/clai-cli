@@ -1,8 +1,57 @@
 #!/usr/bin/env node
 
 import { render } from "ink";
+import { existsSync, rmSync } from "node:fs";
+import { resolve } from "node:path";
+import * as readline from "node:readline";
 import { App } from "./App.js";
+import { VERSION } from "./lib/version.js";
 import { ensureApiKey } from "./lib/api-key.js";
+
+const arg = process.argv[2];
+
+if (arg === "uninstall" || arg === "--uninstall") {
+  const home = process.env.HOME ?? "~";
+  const installDir = resolve(home, ".clai");
+  const binPath = resolve(home, ".local/bin/clai");
+  const configDir = resolve(process.env.XDG_CONFIG_HOME ?? resolve(home, ".config"), "clai");
+
+  console.log("\n  Uninstalling Clai...\n");
+
+  if (existsSync(binPath)) {
+    rmSync(binPath);
+    console.log(`  Removed ${binPath}`);
+  }
+  if (existsSync(installDir)) {
+    rmSync(installDir, { recursive: true });
+    console.log(`  Removed ${installDir}`);
+  }
+
+  if (existsSync(configDir)) {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    rl.question(`  Remove config and conversations (${configDir})? [y/N] `, (answer) => {
+      rl.close();
+      if (answer.trim().toLowerCase() === "y") {
+        rmSync(configDir, { recursive: true });
+        console.log(`  Removed ${configDir}`);
+      } else {
+        console.log(`  Kept ${configDir}`);
+      }
+      console.log("\n  Clai uninstalled.\n");
+    });
+  } else {
+    console.log("\n  Clai uninstalled.\n");
+  }
+  process.exit(0);
+}
+
+if (arg === "--version" || arg === "-v") {
+  console.log(`clai v${VERSION}`);
+  process.exit(0);
+}
 
 const GOODBYES = [
   "See you later!",

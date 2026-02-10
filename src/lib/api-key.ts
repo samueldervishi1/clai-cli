@@ -28,6 +28,11 @@ async function promptForKey(): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
     console.log("\n  Welcome to Clai!\n");
+    rl.on("close", () => {
+      // Ctrl+C or Ctrl+D during prompt
+      console.log("\n");
+      process.exit(0);
+    });
     rl.question("  Enter your Anthropic API key: ", (answer) => {
       rl.close();
       resolve(answer.trim());
