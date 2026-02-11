@@ -312,16 +312,28 @@ function webFetch(url: string): ToolResult {
       { encoding: "utf-8", timeout: 15000 },
     );
 
-    // Strip HTML tags for a rough text extraction
-    // Use loop to handle nested/malformed tags that single-pass misses
+    // Strip HTML to plain text using indexOf-based removal for script/style
+    // (avoids multi-character regex patterns flagged by CodeQL)
     let text = result;
-    let prev;
-    do {
-      prev = text;
-      text = text
-        .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, "")
-        .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, "");
-    } while (text !== prev);
+    for (const tag of ["script", "style"]) {
+      let lower = text.toLowerCase();
+      let start = lower.indexOf(`<${tag}`);
+      while (start !== -1) {
+        const end = lower.indexOf(`</${tag}`, start);
+        if (end === -1) {
+          text = text.slice(0, start);
+          break;
+        }
+        const closeEnd = lower.indexOf(">", end);
+        if (closeEnd === -1) {
+          text = text.slice(0, start);
+          break;
+        }
+        text = text.slice(0, start) + text.slice(closeEnd + 1);
+        lower = text.toLowerCase();
+        start = lower.indexOf(`<${tag}`);
+      }
+    }
     text = text
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
