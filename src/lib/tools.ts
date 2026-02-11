@@ -313,9 +313,16 @@ function webFetch(url: string): ToolResult {
     );
 
     // Strip HTML tags for a rough text extraction
-    const text = result
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
+    // Use loop to handle nested/malformed tags that single-pass misses
+    let text = result;
+    let prev;
+    do {
+      prev = text;
+      text = text
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, "")
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, "");
+    } while (text !== prev);
+    text = text
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim();
