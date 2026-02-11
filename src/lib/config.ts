@@ -23,6 +23,7 @@ function validateConfig(data: unknown): ClaiConfig {
     }
     config.presets = presets;
   }
+  if (typeof obj.theme === "string") config.theme = obj.theme;
   return config;
 }
 

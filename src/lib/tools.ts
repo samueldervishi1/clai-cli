@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync } from "n
 import { resolve, relative, join, dirname } from "node:path";
 import { validatePath, validateFileSize, getWorkingDirectory } from "./sandbox.js";
 import type Anthropic from "@anthropic-ai/sdk";
+import { execSync } from "node:child_process";
 
 // Tool definitions for the Anthropic API
 export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
@@ -74,6 +75,21 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
       required: ["path", "content"],
     },
   },
+  {
+    name: "web_fetch",
+    description:
+      "Fetch the text content of a webpage. Returns the page text (HTML stripped). Use this when the user asks about a URL or you need to look something up online.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        url: {
+          type: "string",
+          description: "The URL to fetch",
+        },
+      },
+      required: ["url"],
+    },
+  },
 ];
 
 export interface ToolResult {
@@ -104,6 +120,12 @@ export function executeTool(name: string, input: Record<string, unknown>): ToolR
       if (typeof input.content !== "string")
         return { output: "Missing or invalid 'content'", isError: true };
       return writeFile(input.path, input.content);
+    }
+    case "web_fetch": {
+      if (typeof input.url !== "string") {
+        return { output: "Missing or invalid 'url'", isError: true };
+      }
+      return webFetch(input.url);
     }
     default:
       return { output: `Unknown tool: ${name}`, isError: true };
@@ -265,5 +287,51 @@ function writeFile(filePath: string, content: string): ToolResult {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { output: `Error writing file: ${msg}`, isError: true };
+  }
+}
+
+function webFetch(url: string): ToolResult {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { output: "Invalid URL", isError: true };
+  }
+
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return {
+      output: "Only HTTP/HTTPS URLs are supported",
+      isError: true,
+    };
+  }
+
+  try {
+    //Use curl for simplicity - available on virtually all systems
+    const result = execSync(
+      `curl -sL -m 10 --max-filesize 500000 -H "User-Agent: Clai/1.0" ${JSON.stringify(url)}`,
+      { encoding: "utf-8", timeout: 15000 },
+    );
+
+    // Strip HTML tags for a rough text extraction
+    const text = result
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!text) {
+      return { output: "Page returned no readable content.", isError: false };
+    }
+
+    // Truncate to keep token usage resonable
+    const truncated = text.length > 8000 ? text.slice(0, 8000) + "\n\n[Truncated]" : text;
+    return {
+      output: `Content from ${parsed.hostname}:\n\n${truncated}`,
+      isError: false,
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { output: `Failed to fetch URL ${msg}`, isError: true };
   }
 }

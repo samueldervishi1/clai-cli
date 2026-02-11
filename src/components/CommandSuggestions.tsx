@@ -1,5 +1,5 @@
 import { Box, Text } from "ink";
-import { theme } from "../lib/theme.js";
+import { getTheme } from "../lib/theme.js";
 import type { Command } from "../lib/commands.js";
 
 interface CommandSuggestionsProps {
@@ -8,6 +8,7 @@ interface CommandSuggestionsProps {
 
 export function CommandSuggestions({ commands }: CommandSuggestionsProps) {
   if (commands.length === 0) return null;
+  const theme = getTheme();
 
   return (
     <Box

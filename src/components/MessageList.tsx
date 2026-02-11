@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Box, Text, useStdout } from "ink";
 import Spinner from "ink-spinner";
 import { Message } from "./Message.js";
-import { theme } from "../lib/theme.js";
+import { getTheme } from "../lib/theme.js";
 import type { ChatMessage, AppState, MessageSegment } from "../lib/types.js";
 
 const TOOL_LABELS: Record<string, string> = {
@@ -50,6 +50,7 @@ export function MessageList({
   appState,
   scrollOffset,
 }: MessageListProps) {
+  const theme = getTheme();
   const { stdout } = useStdout();
   const termWidth = stdout?.columns ?? 80;
   const termHeight = stdout?.rows ?? 24;

@@ -1,5 +1,5 @@
 import { Box, Text } from "ink";
-import { theme } from "../lib/theme.js";
+import { getTheme } from "../lib/theme.js";
 import { renderMarkdown } from "../lib/markdown.js";
 import type { ChatMessage } from "../lib/types.js";
 
@@ -15,6 +15,7 @@ interface MessageProps {
 }
 
 export function Message({ message }: MessageProps) {
+  const theme = getTheme();
   const isUser = message.role === "user";
   const bulletColor = isUser ? theme.prompt : theme.system;
 

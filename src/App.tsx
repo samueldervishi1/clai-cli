@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { randomUUID } from "node:crypto";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, extname, join } from "node:path";
@@ -20,6 +21,7 @@ import {
 } from "./lib/config.js";
 import { saveConversation, loadConversation, listConversations } from "./lib/conversations.js";
 import { validatePath } from "./lib/sandbox.js";
+import { setTheme } from "./lib/theme.js";
 import type { ChatMessage, AppState, TokenUsage, MessageSegment, ChatImage } from "./lib/types.js";
 import { VERSION } from "./lib/version.js";
 
@@ -35,9 +37,12 @@ const HELP_TEXT = `Available commands:
   /load     — Load a saved conversation. /load to list
   /model    — Show or switch model. /model <name> to switch
   /preset   — System prompt presets. /preset <name> or /preset save <name>
+  /restore  — Restore a session. /restore to list, /restore <name>
   /save     — Save conversation. /save [name]
   /system   — Set a system prompt. Usage: /system <prompt>
+  /theme    — Switch theme. /theme <name> or /theme to list
   /tokens   — Show token usage and cost details
+  /web      — Fetch and summarize a URL. Usage: /web <url>
 
 Clai can also read, search, list, and write files in your working directory.
 Just ask it to look at your code!`;
@@ -58,12 +63,17 @@ export function App({ initialMessage }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const terminalHeight = stdout?.rows ?? 24;
-  const config = useMemo(() => loadConfig(), []);
+  const config = useMemo(() => {
+    const cfg = loadConfig();
+    if (cfg.theme) setTheme(cfg.theme);
+    return cfg;
+  }, []);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [streamSegments, setStreamSegments] = useState<MessageSegment[]>([]);
   const [appState, setAppState] = useState<AppState>("idle");
   const [error, setError] = useState<string | undefined>();
+  const [info, setInfo] = useState<string | undefined>();
   const [currentModel, setCurrentModel] = useState<string>(config.defaultModel ?? DEFAULT_MODEL);
   const [systemPrompt, setSystemPrompt] = useState<string | undefined>(config.systemPrompt);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -75,6 +85,31 @@ export function App({ initialMessage }: AppProps) {
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const sessionIdRef = useRef<string | null>(null);
+
+  /** Get or create the session ID for the current conversation */
+  const getSessionId = useCallback(() => {
+    if (!sessionIdRef.current) {
+      const now = new Date();
+      const date = now.toISOString().slice(0, 10);
+      const time = now.toTimeString().slice(0, 8).replace(/:/g, "");
+      sessionIdRef.current = `${randomUUID()}_${date}T${time}`;
+    }
+    return sessionIdRef.current;
+  }, []);
+
+  /** Save current conversation to disk (filtered, using session ID) */
+  const persistSession = useCallback(
+    (msgs: ChatMessage[]) => {
+      const real = msgs.filter((m) => !m.id.startsWith("system-"));
+      if (real.length === 0) return;
+      try {
+        saveConversation(real, getSessionId());
+      } catch {}
+    },
+    [getSessionId],
+  );
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -88,6 +123,22 @@ export function App({ initialMessage }: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  //Keep ref in sync for exit handler
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // Save session on process exit (safety net)
+  useEffect(() => {
+    const handleExit = () => {
+      persistSession(messagesRef.current);
+    };
+    process.on("exit", handleExit);
+    return () => {
+      process.removeListener("exit", handleExit);
+    };
+  }, [persistSession]);
+
   useInput((_input, key) => {
     if (key.ctrl && _input === "c") {
       exit();
@@ -96,16 +147,16 @@ export function App({ initialMessage }: AppProps) {
       abortRef.current?.abort();
     }
     if (appState === "idle") {
-      // PageUp/PageDown always scroll the conversation
+      // PageUp/PageDown: scroll the conversation
       if (key.pageUp) {
         setScrollOffset((prev) => Math.min(prev + 3, Math.max(0, messages.length - 1)));
       }
       if (key.pageDown) {
         setScrollOffset((prev) => Math.max(0, prev - 3));
       }
-      // Up/down arrows: navigate input history when input is empty or browsing history
-      if (key.upArrow && (!inputValue || historyIndex >= 0)) {
-        if (inputHistory.length > 0) {
+      // Up/down arrows: input history only
+      if (key.upArrow) {
+        if (inputHistory.length > 0 && (!inputValue || historyIndex >= 0)) {
           const newIdx = Math.min(historyIndex + 1, inputHistory.length - 1);
           setHistoryIndex(newIdx);
           setInputValue(inputHistory[newIdx]!);
@@ -115,9 +166,6 @@ export function App({ initialMessage }: AppProps) {
         const newIdx = historyIndex - 1;
         setHistoryIndex(newIdx);
         setInputValue(newIdx >= 0 ? inputHistory[newIdx]! : "");
-      } else if (key.downArrow && !inputValue) {
-        // No history active, scroll conversation
-        setScrollOffset((prev) => Math.max(0, prev - 3));
       }
     }
   });
@@ -198,6 +246,12 @@ export function App({ initialMessage }: AppProps) {
               }
             }
             setStreamSegments([...localSegments]);
+          } else if (event.type === "tool_approve") {
+            const path = event.tool.input.path as string;
+            const content = event.tool.input.content as string;
+            const preview = content.length > 200 ? content.slice(0, 200) + "..." : content;
+            addSystemMessage(`Write file: ${path}\n\n${preview}\n\nApproved automatically.`);
+            event.approve();
           } else if (event.type === "warning") {
             setError(event.message);
           }
@@ -251,6 +305,7 @@ export function App({ initialMessage }: AppProps) {
 
       setInputValue("");
       setError(undefined);
+      setInfo(undefined);
       setHistoryIndex(-1);
       setInputHistory((prev) => [trimmed, ...prev.slice(0, 99)]);
 
@@ -261,9 +316,40 @@ export function App({ initialMessage }: AppProps) {
         return;
       }
 
+      if (trimmed === "/restore" || trimmed.startsWith("/restore ")) {
+        const name = trimmed.slice("/restore".length).trim();
+
+        if (!name) {
+          // List available sessions
+          const convos = listConversations();
+          if (convos.length === 0) {
+            addSystemMessage("No saved sessions.");
+          } else {
+            const list = convos
+              .slice(0, 10)
+              .map((c) => `  - ${c}`)
+              .join("\n");
+            addSystemMessage(`Available sessions:\n${list}\n\nUse /restore <name>`);
+          }
+          return;
+        }
+
+        const loaded = loadConversation(name);
+        if (!loaded) {
+          setError(`Session "${name}" not found. Use /restore to list.`);
+          return;
+        }
+        setMessages(loaded);
+        setTotalUsage({ inputTokens: 0, outputTokens: 0, totalCost: 0 });
+        sessionIdRef.current = null;
+        setInfo("session restored");
+        return;
+      }
+
       if (trimmed === "/clear") {
         setMessages([]);
         setTotalUsage({ inputTokens: 0, outputTokens: 0, totalCost: 0 });
+        sessionIdRef.current = null;
         return;
       }
 
@@ -385,7 +471,7 @@ Lifetime spend: $${lifetime.toFixed(4)}`;
         }
         setMessages(loaded);
         setTotalUsage({ inputTokens: 0, outputTokens: 0, totalCost: 0 });
-        addSystemMessage(`Loaded conversation "${name}" (${loaded.length} messages).`);
+        setInfo("conversation loaded");
         return;
       }
 
@@ -516,15 +602,18 @@ Use /config save to persist current settings.`);
 
           const chatResult = await runStreamChat(updatedMessages);
           if (chatResult) {
-            setMessages((prev) => [
-              ...prev,
+            const newMessages = [
+              ...updatedMessages,
               {
-                id: `assistant-${Date.now()}`,
+                id: `${currentModel}-${Date.now()}`,
                 role: "assistant" as const,
                 content: chatResult.text,
+                model: currentModel,
                 segments: chatResult.segments,
               },
-            ]);
+            ];
+            setMessages(newMessages);
+            persistSession(newMessages);
           }
         } catch {
           setError("Failed to read image file.");
@@ -571,15 +660,18 @@ Use /config save to persist current settings.`);
 
           const chatResult = await runStreamChat(updatedMessages);
           if (chatResult) {
-            setMessages((prev) => [
-              ...prev,
+            const newMessages = [
+              ...updatedMessages,
               {
-                id: `assistant-${Date.now()}`,
+                id: `${currentModel}-${Date.now()}`,
                 role: "assistant" as const,
                 content: chatResult.text,
+                model: currentModel,
                 segments: chatResult.segments,
               },
-            ]);
+            ];
+            setMessages(newMessages);
+            persistSession(newMessages);
           }
         } catch (err) {
           process.stdin.resume();
@@ -589,6 +681,34 @@ Use /config save to persist current settings.`);
           const msg = err instanceof Error ? err.message : String(err);
           setError(`Editor failed: ${msg}`);
         }
+        return;
+      }
+
+      if (trimmed === "/theme" || trimmed.startsWith("/theme ")) {
+        const arg = trimmed.slice("/theme".length).trim().toLowerCase();
+        if (!arg) {
+          const { getThemeName, listThemes } = await import("./lib/theme.js");
+          const current = getThemeName();
+          const list = listThemes()
+            .map((t) => `  ${t}${t === current ? " (active)" : ""}`)
+            .join("\n");
+
+          addSystemMessage(
+            `Current theme: ${current}\n\nAvailable themes:\n${list}\n\nUsage: /theme <name>`,
+          );
+          return;
+        }
+
+        const { setTheme, getThemeName } = await import("./lib/theme.js");
+        if (!setTheme(arg)) {
+          const { listThemes } = await import("./lib/theme.js");
+          setError(`Unknown theme "${arg}". Available: ${listThemes().join(", ")}`);
+          return;
+        }
+        const currentConfig = loadConfig();
+        currentConfig.theme = arg;
+        saveConfig(currentConfig);
+        addSystemMessage(`Switched to ${arg} theme.`);
         return;
       }
 
@@ -620,6 +740,38 @@ Use /config save to persist current settings.`);
         return;
       }
 
+      if (trimmed.startsWith("/web ")) {
+        const url = trimmed.slice("/web ".length).trim();
+        if (!url) {
+          setError("Usage: /web <url>");
+          return;
+        }
+
+        const userMessage: ChatMessage = {
+          id: `user-${Date.now()}`,
+          role: "user",
+          content: `Fetch and summarize this URL: ${url}`,
+        };
+        const updatedMessages = [...messages, userMessage];
+        setMessages(updatedMessages);
+        const chatResult = await runStreamChat(updatedMessages);
+        if (chatResult) {
+          const newMessages = [
+            ...updatedMessages,
+            {
+              id: `${currentModel}-${Date.now()}`,
+              role: "assistant" as const,
+              content: chatResult.text,
+              model: currentModel,
+              segments: chatResult.segments,
+            },
+          ];
+          setMessages(newMessages);
+          persistSession(newMessages);
+        }
+        return;
+      }
+
       if (trimmed.startsWith("/")) {
         setError(`Unknown command: ${trimmed}. Type /help for available commands.`);
         return;
@@ -638,12 +790,15 @@ Use /config save to persist current settings.`);
       const chatResult = await runStreamChat(updatedMessages);
       if (chatResult) {
         const assistantMessage: ChatMessage = {
-          id: `assistant-${Date.now()}`,
+          id: `${currentModel}-${Date.now()}`,
           role: "assistant",
           content: chatResult.text,
+          model: currentModel,
           segments: chatResult.segments,
         };
-        setMessages((prev) => [...prev, assistantMessage]);
+        const newMessages = [...updatedMessages, assistantMessage];
+        setMessages(newMessages);
+        persistSession(newMessages);
       }
     },
     [
@@ -656,12 +811,15 @@ Use /config save to persist current settings.`);
       systemPrompt,
       copyToClipboard,
       runStreamChat,
+      persistSession,
     ],
   );
 
   return (
     <Box flexDirection="column" height={terminalHeight}>
-      <Header version={VERSION} model={currentModel} />
+      {messages.filter((m) => !m.id.startsWith("system-")).length === 0 && (
+        <Header version={VERSION} model={currentModel} />
+      )}
       <MessageList
         messages={messages}
         streamSegments={streamSegments}
@@ -679,6 +837,7 @@ Use /config save to persist current settings.`);
         messageCount={messages.length}
         appState={appState}
         error={error}
+        info={info}
         totalUsage={totalUsage}
       />
     </Box>

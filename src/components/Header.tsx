@@ -1,5 +1,5 @@
 import { Box, Text, useStdout } from "ink";
-import { theme } from "../lib/theme.js";
+import { getTheme } from "../lib/theme.js";
 import { DEFAULT_MODEL } from "../lib/claude.js";
 
 interface HeaderProps {
@@ -8,6 +8,7 @@ interface HeaderProps {
 }
 
 export function Header({ version, model = DEFAULT_MODEL }: HeaderProps) {
+  const theme = getTheme();
   const { stdout } = useStdout();
   const termWidth = Math.max((stdout?.columns ?? 80) - 2, 10);
   const modelDisplay = model.includes("haiku") ? "Haiku 4.5" : "Sonnet 4.5";

@@ -18,6 +18,9 @@ export const COMMANDS: Command[] = [
   { name: "/save", description: "Save conversation. /save [name]" },
   { name: "/system", description: "Set a system prompt. Usage: /system <prompt>" },
   { name: "/tokens", description: "Show token usage and cost details" },
+  { name: "/theme", description: "Switch theme. /theme <name> or /theme to list" },
+  { name: "/restore", description: "Restore previous session" },
+  { name: "/web", description: "Fetch and summarize a URL. Usage: /web <url>" },
 ];
 
 export function filterCommands(input: string): Command[] {

@@ -144,6 +144,43 @@ export async function* streamChat(
       if (block.type === "tool_use") {
         const toolInput = block.input as Record<string, unknown>;
 
+        // For write_file, ask for approval before executing
+        if (block.name === "write_file") {
+          let resolveApproval!: (approved: boolean) => void;
+          const approvalPromise = new Promise<boolean>((r) => {
+            resolveApproval = r;
+          });
+
+          // yield happens in generator body (valid), await on separate promise
+          yield {
+            type: "tool_approve" as const,
+            tool: { name: block.name, input: toolInput },
+            approve: () => resolveApproval(true),
+            deny: () => resolveApproval(false),
+          };
+
+          const approved = await approvalPromise;
+
+          if (!approved) {
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: "User denied this file write.",
+              is_error: true,
+            });
+            yield {
+              type: "tool_done",
+              tool: {
+                name: block.name,
+                input: toolInput,
+                output: "Denied by user",
+                isError: true,
+              },
+            };
+            continue;
+          }
+        }
+
         yield {
           type: "tool_start",
           tool: { name: block.name, input: toolInput },

@@ -1,6 +1,6 @@
 import { Box, Text } from "ink";
 import TextInput from "ink-text-input";
-import { theme } from "../lib/theme.js";
+import { getTheme } from "../lib/theme.js";
 
 interface InputBarProps {
   value: string;
@@ -10,6 +10,7 @@ interface InputBarProps {
 }
 
 export function InputBar({ value, onChange, onSubmit, isDisabled }: InputBarProps) {
+  const theme = getTheme();
   return (
     <Box borderStyle="round" borderColor={theme.border} paddingX={1} width="100%">
       <Text bold color={theme.prompt}>

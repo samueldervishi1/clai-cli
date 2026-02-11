@@ -1,15 +1,17 @@
 import { Box, Text } from "ink";
-import { theme } from "../lib/theme.js";
+import { getTheme } from "../lib/theme.js";
 import type { AppState, TokenUsage } from "../lib/types.js";
 
 interface StatusBarProps {
   messageCount: number;
   appState: AppState;
   error?: string;
+  info?: string;
   totalUsage: TokenUsage;
 }
 
-export function StatusBar({ messageCount, appState, error, totalUsage }: StatusBarProps) {
+export function StatusBar({ messageCount, appState, error, info, totalUsage }: StatusBarProps) {
+  const theme = getTheme();
   const costDisplay = totalUsage.totalCost > 0 ? `$${totalUsage.totalCost.toFixed(4)}` : "";
 
   return (
@@ -23,6 +25,7 @@ export function StatusBar({ messageCount, appState, error, totalUsage }: StatusB
       ) : (
         <Text color={theme.dim}>
           {messageCount} message{messageCount !== 1 ? "s" : ""}
+          {info ? ` · ${info}` : ""}
           {costDisplay ? ` · ${costDisplay}` : ""}
         </Text>
       )}

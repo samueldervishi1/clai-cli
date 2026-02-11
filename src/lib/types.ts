@@ -13,6 +13,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  model?: string;
   segments?: MessageSegment[];
   images?: ChatImage[];
 }
@@ -43,6 +44,7 @@ export interface ClaiConfig {
   maxTokens?: number;
   lifetimeSpend?: number;
   presets?: Record<string, string>;
+  theme?: string;
 }
 
 // Events yielded by the streaming chat generator
@@ -50,4 +52,5 @@ export type StreamEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_start"; tool: ToolCallInfo }
   | { type: "tool_done"; tool: ToolCallInfo }
+  | { type: "tool_approve"; tool: ToolCallInfo; approve: () => void; deny: () => void }
   | { type: "warning"; message: string };
