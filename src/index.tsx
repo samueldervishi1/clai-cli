@@ -41,11 +41,12 @@ if (arg === "uninstall" || arg === "--uninstall") {
         console.log(`  Kept ${configDir}`);
       }
       console.log("\n  Clai uninstalled.\n");
+      process.exit(0);
     });
   } else {
     console.log("\n  Clai uninstalled.\n");
+    process.exit(0);
   }
-  process.exit(0);
 }
 
 if (arg === "--version" || arg === "-v") {

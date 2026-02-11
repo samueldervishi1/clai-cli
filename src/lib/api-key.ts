@@ -59,7 +59,7 @@ export async function ensureApiKey(isPiped: boolean): Promise<void> {
 
   // Prompt user
   const key = await promptForKey();
-  if (!key || !key.startsWith("sk-ant-")) {
+  if (!key || !key.startsWith("sk-ant-") || key.length < 20 || !/^[\w-]+$/.test(key)) {
     console.error("  Invalid key. Expected format: sk-ant-...");
     process.exit(1);
   }

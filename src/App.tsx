@@ -1,7 +1,8 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
-import { resolve, extname } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { resolve, extname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { Box, useApp, useInput, useStdout } from "ink";
 import { Header } from "./components/Header.js";
 import { MessageList } from "./components/MessageList.js";
@@ -18,6 +19,7 @@ import {
   getLifetimeSpend,
 } from "./lib/config.js";
 import { saveConversation, loadConversation, listConversations } from "./lib/conversations.js";
+import { validatePath } from "./lib/sandbox.js";
 import type { ChatMessage, AppState, TokenUsage, MessageSegment, ChatImage } from "./lib/types.js";
 import { VERSION } from "./lib/version.js";
 
@@ -31,7 +33,7 @@ const HELP_TEXT = `Available commands:
   /help     — Show this help message
   /image    — Send an image. Usage: /image <path> [question]
   /load     — Load a saved conversation. /load to list
-  /model    — Switch model (Haiku 4.5 ↔ Sonnet 4.5)
+  /model    — Show or switch model. /model <name> to switch
   /preset   — System prompt presets. /preset <name> or /preset save <name>
   /save     — Save conversation. /save [name]
   /system   — Set a system prompt. Usage: /system <prompt>
@@ -70,6 +72,9 @@ export function App({ initialMessage }: AppProps) {
     outputTokens: 0,
     totalCost: 0,
   });
+  const [inputHistory, setInputHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -87,13 +92,31 @@ export function App({ initialMessage }: AppProps) {
     if (key.ctrl && _input === "c") {
       exit();
     }
+    if (key.escape && appState === "streaming") {
+      abortRef.current?.abort();
+    }
     if (appState === "idle") {
-      const scrollUp = key.pageUp || (key.upArrow && !inputValue);
-      const scrollDown = key.pageDown || (key.downArrow && !inputValue);
-      if (scrollUp) {
+      // PageUp/PageDown always scroll the conversation
+      if (key.pageUp) {
         setScrollOffset((prev) => Math.min(prev + 3, Math.max(0, messages.length - 1)));
       }
-      if (scrollDown) {
+      if (key.pageDown) {
+        setScrollOffset((prev) => Math.max(0, prev - 3));
+      }
+      // Up/down arrows: navigate input history when input is empty or browsing history
+      if (key.upArrow && (!inputValue || historyIndex >= 0)) {
+        if (inputHistory.length > 0) {
+          const newIdx = Math.min(historyIndex + 1, inputHistory.length - 1);
+          setHistoryIndex(newIdx);
+          setInputValue(inputHistory[newIdx]!);
+        }
+      }
+      if (key.downArrow && historyIndex >= 0) {
+        const newIdx = historyIndex - 1;
+        setHistoryIndex(newIdx);
+        setInputValue(newIdx >= 0 ? inputHistory[newIdx]! : "");
+      } else if (key.downArrow && !inputValue) {
+        // No history active, scroll conversation
         setScrollOffset((prev) => Math.max(0, prev - 3));
       }
     }
@@ -118,6 +141,14 @@ export function App({ initialMessage }: AppProps) {
     }
   }, []);
 
+  const handleInputChange = useCallback(
+    (v: string) => {
+      setInputValue(v);
+      if (historyIndex >= 0) setHistoryIndex(-1);
+    },
+    [historyIndex],
+  );
+
   const runStreamChat = useCallback(
     async (
       chatMessages: ChatMessage[],
@@ -126,10 +157,20 @@ export function App({ initialMessage }: AppProps) {
       setAppState("streaming");
       setStreamSegments([]);
 
+      const abortController = new AbortController();
+      abortRef.current = abortController;
+
+      let fullResponse = "";
+      const localSegments: MessageSegment[] = [];
+
       try {
-        let fullResponse = "";
-        const localSegments: MessageSegment[] = [];
-        const generator = streamChat(chatMessages, currentModel, maxTokens, systemPrompt);
+        const generator = streamChat(
+          chatMessages,
+          currentModel,
+          maxTokens,
+          systemPrompt,
+          abortController.signal,
+        );
 
         let result = await generator.next();
         while (!result.done) {
@@ -157,6 +198,8 @@ export function App({ initialMessage }: AppProps) {
               }
             }
             setStreamSegments([...localSegments]);
+          } else if (event.type === "warning") {
+            setError(event.message);
           }
 
           result = await generator.next();
@@ -172,6 +215,13 @@ export function App({ initialMessage }: AppProps) {
 
         return { text: fullResponse, segments: localSegments };
       } catch (err: unknown) {
+        // Handle user-initiated cancel (Escape key)
+        if (abortController.signal.aborted) {
+          if (fullResponse) {
+            return { text: fullResponse, segments: localSegments };
+          }
+          return null;
+        }
         let msg: string;
         if (err && typeof err === "object" && "status" in err && "error" in err) {
           const apiErr = err as { status: number; error?: { error?: { message?: string } } };
@@ -180,8 +230,13 @@ export function App({ initialMessage }: AppProps) {
           msg = err instanceof Error ? err.message : String(err);
         }
         setError(msg);
+        // Return partial response if we received any content before the error
+        if (fullResponse) {
+          return { text: fullResponse, segments: localSegments };
+        }
         return null;
       } finally {
+        abortRef.current = null;
         setStreamSegments([]);
         setAppState("idle");
       }
@@ -196,6 +251,8 @@ export function App({ initialMessage }: AppProps) {
 
       setInputValue("");
       setError(undefined);
+      setHistoryIndex(-1);
+      setInputHistory((prev) => [trimmed, ...prev.slice(0, 99)]);
 
       // === Commands ===
 
@@ -227,10 +284,33 @@ Lifetime spend: $${lifetime.toFixed(4)}`;
         return;
       }
 
-      if (trimmed === "/model") {
-        const newModel = currentModel === MODELS.haiku ? MODELS.sonnet : MODELS.haiku;
-        setCurrentModel(newModel);
-        addSystemMessage(`Switched to ${MODEL_DISPLAY[newModel]}`);
+      if (trimmed === "/model" || trimmed.startsWith("/model ")) {
+        const arg = trimmed.slice("/model".length).trim().toLowerCase();
+        if (!arg) {
+          // Show current model and list available ones
+          const currentName = MODEL_DISPLAY[currentModel] ?? currentModel;
+          const list = Object.entries(MODELS)
+            .map(([name, id]) => {
+              const display = MODEL_DISPLAY[id] ?? id;
+              const marker = id === currentModel ? " (active)" : "";
+              return `  ${name} — ${display}${marker}`;
+            })
+            .join("\n");
+          addSystemMessage(
+            `Current model: ${currentName}\n\nAvailable models:\n${list}\n\nUsage: /model <name>`,
+          );
+          return;
+        }
+        // Match by short name (e.g. "haiku", "sonnet")
+        const match = Object.entries(MODELS).find(([name]) => name === arg);
+        if (!match) {
+          const names = Object.keys(MODELS).join(", ");
+          setError(`Unknown model "${arg}". Available: ${names}`);
+          return;
+        }
+        const [, modelId] = match;
+        setCurrentModel(modelId);
+        addSystemMessage(`Switched to ${MODEL_DISPLAY[modelId]}`);
         return;
       }
 
@@ -242,6 +322,10 @@ Lifetime spend: $${lifetime.toFixed(4)}`;
           } else {
             addSystemMessage("No system prompt set. Usage: /system <prompt>");
           }
+          return;
+        }
+        if (prompt.length > 10_000) {
+          setError("System prompt too long (max 10,000 characters).");
           return;
         }
         setSystemPrompt(prompt);
@@ -400,6 +484,11 @@ Use /config save to persist current settings.`);
         }
 
         const absPath = resolve(imagePath);
+        const pathCheck = validatePath(absPath);
+        if (!pathCheck.allowed) {
+          setError(pathCheck.reason ?? "Access denied.");
+          return;
+        }
         if (!existsSync(absPath)) {
           setError(`File not found: ${imagePath}`);
           return;
@@ -444,10 +533,17 @@ Use /config save to persist current settings.`);
       }
 
       if (trimmed === "/edit") {
-        const tmpFile = `/tmp/clai-edit-${Date.now()}.md`;
+        const tmpDir = mkdtempSync(join(tmpdir(), "clai-"));
+        const tmpFile = join(tmpDir, "edit.md");
         const editor = process.env.EDITOR ?? process.env.VISUAL ?? "nano";
+        const cleanup = () => {
+          try {
+            rmSync(tmpDir, { recursive: true });
+          } catch {}
+        };
         try {
-          writeFileSync(tmpFile, "");
+          writeFileSync(tmpFile, "", { mode: 0o600 });
+          process.on("exit", cleanup);
           if (process.stdin.isTTY) process.stdin.setRawMode(false);
           process.stdin.pause();
 
@@ -455,9 +551,10 @@ Use /config save to persist current settings.`);
 
           process.stdin.resume();
           if (process.stdin.isTTY) process.stdin.setRawMode(true);
+          process.removeListener("exit", cleanup);
 
           const content = readFileSync(tmpFile, "utf-8").trim();
-          unlinkSync(tmpFile);
+          cleanup();
 
           if (!content) {
             addSystemMessage("Editor closed with no content.");
@@ -487,9 +584,8 @@ Use /config save to persist current settings.`);
         } catch (err) {
           process.stdin.resume();
           if (process.stdin.isTTY) process.stdin.setRawMode(true);
-          try {
-            unlinkSync(tmpFile);
-          } catch {}
+          process.removeListener("exit", cleanup);
+          cleanup();
           const msg = err instanceof Error ? err.message : String(err);
           setError(`Editor failed: ${msg}`);
         }
@@ -575,7 +671,7 @@ Use /config save to persist current settings.`);
       <CommandSuggestions commands={filterCommands(inputValue)} />
       <InputBar
         value={inputValue}
-        onChange={setInputValue}
+        onChange={handleInputChange}
         onSubmit={handleSubmit}
         isDisabled={appState === "streaming"}
       />

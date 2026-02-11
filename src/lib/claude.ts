@@ -10,7 +10,12 @@ import type { ChatMessage, TokenUsage, StreamEvent, ChatImage } from "./types.js
 
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
-  if (!_client) _client = new Anthropic();
+  if (!_client) {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error("ANTHROPIC_API_KEY is not set. Run `clai` interactively to configure it.");
+    }
+    _client = new Anthropic();
+  }
   return _client;
 }
 
@@ -45,6 +50,7 @@ export async function* streamChat(
   model: string = DEFAULT_MODEL,
   maxTokens: number = DEFAULT_MAX_TOKENS,
   systemPrompt?: string,
+  signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent, StreamResult, unknown> {
   let apiMessages: Anthropic.MessageParam[] = messages.map((m) => {
     if (m.images?.length) {
@@ -69,14 +75,17 @@ export async function* streamChat(
   let finalText = "";
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const stream = await getClient().messages.create({
-      model,
-      max_tokens: maxTokens,
-      messages: apiMessages,
-      tools: TOOL_DEFINITIONS,
-      ...(systemPrompt ? { system: systemPrompt } : {}),
-      stream: true,
-    });
+    const stream = await getClient().messages.create(
+      {
+        model,
+        max_tokens: maxTokens,
+        messages: apiMessages,
+        tools: TOOL_DEFINITIONS,
+        ...(systemPrompt ? { system: systemPrompt } : {}),
+        stream: true,
+      },
+      { signal },
+    );
 
     // Track content blocks as they build up from stream events
     const contentBlocks: ContentBlock[] = [];
@@ -177,9 +186,24 @@ export async function* streamChat(
       { role: "assistant", content: assistantContent },
       { role: "user", content: toolResults },
     ];
+
+    // Warn if this was the last allowed round
+    if (round === MAX_TOOL_ROUNDS - 1) {
+      yield {
+        type: "warning",
+        message: `Reached maximum tool call rounds (${MAX_TOOL_ROUNDS}). Response may be incomplete.`,
+      };
+    }
   }
 
-  const pricing = PRICING[model] ?? PRICING[DEFAULT_MODEL];
+  const knownPricing = PRICING[model];
+  if (!knownPricing) {
+    yield {
+      type: "warning",
+      message: `Unknown pricing for model "${model}". Cost estimate may be inaccurate.`,
+    };
+  }
+  const pricing = knownPricing ?? PRICING[DEFAULT_MODEL];
   const totalCost =
     (totalInputTokens / 1_000_000) * pricing.input +
     (totalOutputTokens / 1_000_000) * pricing.output;

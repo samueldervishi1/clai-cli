@@ -26,7 +26,9 @@ export function StatusBar({ messageCount, appState, error, totalUsage }: StatusB
           {costDisplay ? ` · ${costDisplay}` : ""}
         </Text>
       )}
-      <Text color={theme.dim}>/help · Ctrl+C to exit</Text>
+      <Text color={theme.dim}>
+        {appState === "streaming" ? "Esc to stop · " : "/help · "}Ctrl+C to exit
+      </Text>
     </Box>
   );
 }

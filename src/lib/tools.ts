@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
-import { resolve, relative, join } from "node:path";
+import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync } from "node:fs";
+import { resolve, relative, join, dirname } from "node:path";
 import { validatePath, validateFileSize, getWorkingDirectory } from "./sandbox.js";
 import type Anthropic from "@anthropic-ai/sdk";
 
@@ -83,14 +83,28 @@ export interface ToolResult {
 
 export function executeTool(name: string, input: Record<string, unknown>): ToolResult {
   switch (name) {
-    case "read_file":
-      return readFile(input.path as string);
-    case "list_dir":
-      return listDir((input.path as string) ?? ".");
-    case "search_files":
-      return searchFiles(input.pattern as string, (input.path as string) ?? ".");
-    case "write_file":
-      return writeFile(input.path as string, input.content as string);
+    case "read_file": {
+      if (typeof input.path !== "string")
+        return { output: "Missing or invalid 'path'", isError: true };
+      return readFile(input.path);
+    }
+    case "list_dir": {
+      const dir = typeof input.path === "string" ? input.path : ".";
+      return listDir(dir);
+    }
+    case "search_files": {
+      if (typeof input.pattern !== "string")
+        return { output: "Missing or invalid 'pattern'", isError: true };
+      const dir = typeof input.path === "string" ? input.path : ".";
+      return searchFiles(input.pattern, dir);
+    }
+    case "write_file": {
+      if (typeof input.path !== "string")
+        return { output: "Missing or invalid 'path'", isError: true };
+      if (typeof input.content !== "string")
+        return { output: "Missing or invalid 'content'", isError: true };
+      return writeFile(input.path, input.content);
+    }
     default:
       return { output: `Unknown tool: ${name}`, isError: true };
   }
@@ -212,12 +226,16 @@ function searchRecursive(
 }
 
 function matchesPattern(filename: string, pattern: string): boolean {
-  // Simple glob matching: *.ts, package.json, etc.
+  // Extract the filename portion if pattern contains path separators
+  // e.g. "**/*.ts" → "*.ts", "src/**/*.json" → "*.json"
+  const filePattern = pattern.includes("/") ? pattern.split("/").pop()! : pattern;
+
   const regex = new RegExp(
     "^" +
-      pattern
+      filePattern
         .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-        .replace(/\*/g, ".*")
+        .replace(/\*\*/g, ".*") // ** matches anything
+        .replace(/\*/g, "[^/]*") // * matches anything except path sep
         .replace(/\?/g, ".") +
       "$",
     "i",
@@ -240,6 +258,7 @@ function writeFile(filePath: string, content: string): ToolResult {
   }
 
   try {
+    mkdirSync(dirname(absPath), { recursive: true });
     writeFileSync(absPath, content);
     const relPath = relative(cwd, absPath);
     return { output: `Written: ${relPath} (${content.length} chars)`, isError: false };

@@ -49,4 +49,5 @@ export interface ClaiConfig {
 export type StreamEvent =
   | { type: "text_delta"; text: string }
   | { type: "tool_start"; tool: ToolCallInfo }
-  | { type: "tool_done"; tool: ToolCallInfo };
+  | { type: "tool_done"; tool: ToolCallInfo }
+  | { type: "warning"; message: string };

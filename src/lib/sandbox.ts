@@ -1,5 +1,5 @@
-import { resolve, relative, basename } from "node:path";
-import { statSync } from "node:fs";
+import { resolve, relative, basename, sep } from "node:path";
+import { statSync, realpathSync } from "node:fs";
 
 // Only allow access within the current working directory
 const CWD = process.cwd();
@@ -82,20 +82,30 @@ export function validatePath(filePath: string): SandboxResult {
   const home = process.env.HOME ?? "";
 
   // Block path traversal outside CWD
-  if (relPath.startsWith("..") || resolve(absPath) !== absPath.replace(/\/$/, "")) {
-    // Re-check: is it within CWD?
-    if (!absPath.startsWith(CWD)) {
+  if (relPath.startsWith("..") || (!absPath.startsWith(CWD + sep) && absPath !== CWD)) {
+    return {
+      allowed: false,
+      reason: "Access denied: path is outside working directory",
+    };
+  }
+
+  // Resolve symlinks and re-check (if the path exists on disk)
+  try {
+    const realPath = realpathSync(absPath);
+    if (!realPath.startsWith(CWD + sep) && realPath !== CWD) {
       return {
         allowed: false,
-        reason: `Access denied: path is outside working directory (${CWD})`,
+        reason: "Access denied: path resolves outside working directory",
       };
     }
+  } catch {
+    // Path doesn't exist yet (e.g. write_file) — the absPath check above is sufficient
   }
 
   // Block system directories
   for (const blocked of BLOCKED_PATHS) {
     if (absPath.startsWith(blocked + "/") || absPath === blocked) {
-      return { allowed: false, reason: `Access denied: system directory (${blocked})` };
+      return { allowed: false, reason: "Access denied: system directory" };
     }
   }
 
@@ -104,7 +114,7 @@ export function validatePath(filePath: string): SandboxResult {
     for (const dir of BLOCKED_HOME_DIRS) {
       const fullBlocked = resolve(home, dir);
       if (absPath.startsWith(fullBlocked + "/") || absPath === fullBlocked) {
-        return { allowed: false, reason: `Access denied: sensitive directory (~/${dir})` };
+        return { allowed: false, reason: "Access denied: sensitive directory" };
       }
     }
   }
@@ -113,7 +123,7 @@ export function validatePath(filePath: string): SandboxResult {
   const name = basename(absPath);
   for (const pattern of BLOCKED_PATTERNS) {
     if (pattern.test(name) || pattern.test(absPath)) {
-      return { allowed: false, reason: `Access denied: sensitive file pattern (${name})` };
+      return { allowed: false, reason: "Access denied: sensitive file pattern" };
     }
   }
 

@@ -13,7 +13,7 @@ export const COMMANDS: Command[] = [
   { name: "/help", description: "Show available commands" },
   { name: "/image", description: "Send an image. Usage: /image <path> [question]" },
   { name: "/load", description: "Load a saved conversation. /load to list" },
-  { name: "/model", description: "Switch model (Haiku 4.5 ↔ Sonnet 4.5)" },
+  { name: "/model", description: "Show or switch model. /model <name> to switch" },
   { name: "/preset", description: "System prompt presets. /preset <name> or /preset save <name>" },
   { name: "/save", description: "Save conversation. /save [name]" },
   { name: "/system", description: "Set a system prompt. Usage: /system <prompt>" },

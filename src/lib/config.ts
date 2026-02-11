@@ -8,11 +8,29 @@ const CONFIG_DIR = resolve(
 );
 const CONFIG_PATH = resolve(CONFIG_DIR, "config.json");
 
+function validateConfig(data: unknown): ClaiConfig {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  const obj = data as Record<string, unknown>;
+  const config: ClaiConfig = {};
+  if (typeof obj.defaultModel === "string") config.defaultModel = obj.defaultModel;
+  if (typeof obj.systemPrompt === "string") config.systemPrompt = obj.systemPrompt;
+  if (typeof obj.maxTokens === "number" && obj.maxTokens > 0) config.maxTokens = obj.maxTokens;
+  if (typeof obj.lifetimeSpend === "number") config.lifetimeSpend = obj.lifetimeSpend;
+  if (obj.presets && typeof obj.presets === "object" && !Array.isArray(obj.presets)) {
+    const presets: Record<string, string> = {};
+    for (const [k, v] of Object.entries(obj.presets)) {
+      if (typeof v === "string") presets[k] = v;
+    }
+    config.presets = presets;
+  }
+  return config;
+}
+
 export function loadConfig(): ClaiConfig {
   try {
     if (!existsSync(CONFIG_PATH)) return {};
     const raw = readFileSync(CONFIG_PATH, "utf-8");
-    return JSON.parse(raw) as ClaiConfig;
+    return validateConfig(JSON.parse(raw));
   } catch {
     return {};
   }
