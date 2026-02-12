@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ClaiConfig } from "./types.js";
+import type { ClaiConfig, ToolPermission } from "./types.js";
 
 const CONFIG_DIR = resolve(
   process.env.XDG_CONFIG_HOME ?? resolve(process.env.HOME ?? "~", ".config"),
@@ -24,6 +24,20 @@ function validateConfig(data: unknown): ClaiConfig {
     config.presets = presets;
   }
   if (typeof obj.theme === "string") config.theme = obj.theme;
+  if (
+    obj.toolPermissions &&
+    typeof obj.toolPermissions === "object" &&
+    !Array.isArray(obj.toolPermissions)
+  ) {
+    const permissions: Record<string, ToolPermission> = {};
+    const validPermissions = new Set<string>(["always", "ask", "never"]);
+    for (const [k, v] of Object.entries(obj.toolPermissions)) {
+      if (typeof v === "string" && validPermissions.has(v)) {
+        permissions[k] = v as ToolPermission;
+      }
+    }
+    config.toolPermissions = permissions;
+  }
   return config;
 }
 
@@ -63,4 +77,18 @@ export function getLifetimeSpend(): number {
 
 export function getConfigPath(): string {
   return CONFIG_PATH;
+}
+
+export function getToolPermission(toolName: string): ToolPermission {
+  const config = loadConfig();
+  return config.toolPermissions?.[toolName] ?? "ask"; // Default to "ask"
+}
+
+export function setToolPermission(toolName: string, permission: ToolPermission): boolean {
+  const config = loadConfig();
+  if (!config.toolPermissions) {
+    config.toolPermissions = {};
+  }
+  config.toolPermissions[toolName] = permission;
+  return saveConfig(config);
 }

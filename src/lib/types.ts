@@ -38,6 +38,8 @@ export interface ChatImage {
   mediaType: string;
 }
 
+export type ToolPermission = "always" | "ask" | "never";
+
 export interface ClaiConfig {
   defaultModel?: string;
   systemPrompt?: string;
@@ -45,6 +47,7 @@ export interface ClaiConfig {
   lifetimeSpend?: number;
   presets?: Record<string, string>;
   theme?: string;
+  toolPermissions?: Record<string, ToolPermission>;
 }
 
 // Events yielded by the streaming chat generator

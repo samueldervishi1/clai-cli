@@ -13,6 +13,9 @@ import { TOOL_DEFINITIONS, executeTool } from "./tools.js";
 import type { ChatMessage, StreamEvent } from "./types.js";
 import type { AIProvider, StreamResult } from "./providers.js";
 import { getModelConfig, DEFAULT_MAX_TOKENS } from "./providers.js";
+import { getToolPermission } from "./config.js";
+import { checkRateLimit, retryWithBackoff } from "./retry.js";
+import { logToolCall, logToolApproved, logToolDenied, logSensitiveFileAccess } from "./audit.js";
 
 let _client: OpenAI | null = null;
 
@@ -95,16 +98,44 @@ export class GroqProvider implements AIProvider {
     let finalText = "";
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const stream = await getClient().chat.completions.create(
-        {
-          model,
-          max_tokens: maxTokens,
-          messages: apiMessages,
-          tools: convertToolsToOpenAI(),
-          stream: true,
-        },
-        { signal },
-      );
+      let stream: AsyncIterable<ChatCompletionChunk>;
+
+      try {
+        stream = await retryWithBackoff(
+          async () => {
+            return await getClient().chat.completions.create(
+              {
+                model,
+                max_tokens: maxTokens,
+                messages: apiMessages,
+                tools: convertToolsToOpenAI(),
+                stream: true,
+              },
+              { signal },
+            );
+          },
+          {
+            maxRetries: 2,
+            initialDelay: 1000,
+            onRetry: (attempt, delay) => {
+              console.error(`Retrying API call (attempt ${attempt}) after ${delay}ms...`);
+            },
+          },
+        );
+      } catch (error) {
+        // Check for rate limiting
+        const rateLimitInfo = checkRateLimit(error);
+        if (rateLimitInfo.isRateLimited) {
+          const waitTime = rateLimitInfo.retryAfter
+            ? `Wait ${rateLimitInfo.retryAfter} seconds`
+            : "Try again later";
+          yield {
+            type: "warning",
+            message: `Rate limit exceeded. ${waitTime}. ${rateLimitInfo.message}`,
+          };
+        }
+        throw error;
+      }
 
       let currentToolCalls: Record<number, { id: string; name: string; arguments: string }> = {};
       let stopReason: string | null = null;
@@ -171,8 +202,49 @@ export class GroqProvider implements AIProvider {
             toolInput = {};
           }
 
-          // For write_file, ask for approval
-          if (toolCall.name === "write_file") {
+          // Log tool call attempt
+          logToolCall(toolCall.name, toolInput);
+
+          // Check tool permission from config
+          const permission = getToolPermission(toolCall.name);
+
+          // If permission is "never", deny immediately
+          if (permission === "never") {
+            logToolDenied(toolCall.name, toolInput);
+            toolResults.push({
+              role: "tool",
+              content: `Tool "${toolCall.name}" is disabled by user configuration.`,
+              tool_call_id: toolCall.id,
+            });
+            yield {
+              type: "tool_done",
+              tool: {
+                name: toolCall.name,
+                input: toolInput,
+                output: "Disabled by configuration",
+                isError: true,
+              },
+            };
+            continue;
+          }
+
+          // Check if tool requires approval based on permission setting and content
+          let needsApproval = permission === "ask";
+
+          // For write_file, always require approval unless permission is "always"
+          if (toolCall.name === "write_file" && permission !== "always") {
+            needsApproval = true;
+          }
+
+          // For read_file, check if it's a sensitive file
+          let isSensitiveFile = false;
+          if (toolCall.name === "read_file" && permission !== "always") {
+            const checkResult = executeTool(toolCall.name, toolInput, false);
+            isSensitiveFile = checkResult.requiresApproval ?? false;
+            needsApproval = needsApproval || isSensitiveFile;
+          }
+
+          if (needsApproval) {
             let resolveApproval!: (approved: boolean) => void;
             const approvalPromise = new Promise<boolean>((r) => {
               resolveApproval = r;
@@ -188,9 +260,15 @@ export class GroqProvider implements AIProvider {
             const approved = await approvalPromise;
 
             if (!approved) {
+              logToolDenied(toolCall.name, toolInput);
+              if (isSensitiveFile && typeof toolInput.path === "string") {
+                logSensitiveFileAccess(toolCall.name, toolInput.path, false);
+              }
+
+              const action = toolCall.name === "write_file" ? "write" : "read";
               toolResults.push({
                 role: "tool",
-                content: "User denied this file write.",
+                content: `User denied this file ${action}.`,
                 tool_call_id: toolCall.id,
               });
               yield {
@@ -204,6 +282,11 @@ export class GroqProvider implements AIProvider {
               };
               continue;
             }
+
+            // Log approval
+            if (isSensitiveFile && typeof toolInput.path === "string") {
+              logSensitiveFileAccess(toolCall.name, toolInput.path, true);
+            }
           }
 
           yield {
@@ -211,7 +294,10 @@ export class GroqProvider implements AIProvider {
             tool: { name: toolCall.name, input: toolInput },
           };
 
-          const result = executeTool(toolCall.name, toolInput);
+          const result = executeTool(toolCall.name, toolInput, true); // Skip approval check on execution
+
+          // Log tool execution result
+          logToolApproved(toolCall.name, toolInput, !result.isError, result.output);
 
           yield {
             type: "tool_done",

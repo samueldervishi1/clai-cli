@@ -22,27 +22,30 @@ import {
 import { saveConversation, loadConversation, listConversations } from "./lib/conversations.js";
 import { validatePath } from "./lib/sandbox.js";
 import { setTheme } from "./lib/theme.js";
+import { loadContextFile } from "./lib/context-files.js";
 import type { ChatMessage, AppState, TokenUsage, MessageSegment, ChatImage } from "./lib/types.js";
 import { VERSION } from "./lib/version.js";
 
 const HELP_TEXT = `Available commands:
-  /clear    — Clear conversation history and free up context
-  /compact  — Summarize conversation to save context
-  /config   — Show config. /config save to persist settings
-  /copy     — Copy last Clai response to clipboard
-  /edit     — Open $EDITOR for multi-line input
-  /exit     — Quit Clai
-  /help     — Show this help message
-  /image    — Send an image. Usage: /image <path> [question]
-  /load     — Load a saved conversation. /load to list
-  /model    — Show or switch model. /model <name> to switch
-  /preset   — System prompt presets. /preset <name> or /preset save <name>
-  /restore  — Restore a session. /restore to list, /restore <name>
-  /save     — Save conversation. /save [name]
-  /system   — Set a system prompt. Usage: /system <prompt>
-  /theme    — Switch theme. /theme <name> or /theme to list
-  /tokens   — Show token usage and cost details
-  /web      — Fetch and summarize a URL. Usage: /web <url>
+  /clear       — Clear conversation history and free up context
+  /compact     — Summarize conversation to save context
+  /config      — Show config. /config save to persist settings
+  /copy        — Copy last Clai response to clipboard
+  /edit        — Open $EDITOR for multi-line input
+  /exit        — Quit Clai
+  /help        — Show this help message
+  /image       — Send an image. Usage: /image <path> [question]
+  /keys        — Show keyboard shortcuts
+  /load        — Load a saved conversation. /load to list
+  /model       — Show or switch model. /model <name> to switch
+  /permissions — Manage tool permissions. /permissions <tool> <always|ask|never>
+  /preset      — System prompt presets. /preset <name> or /preset save <name>
+  /restore     — Restore a session. /restore to list, /restore <name>
+  /save        — Save conversation. /save [name]
+  /system      — Set a system prompt. Usage: /system <prompt>
+  /theme       — Switch theme. /theme <name> or /theme to list
+  /tokens      — Show token usage and cost details
+  /web         — Fetch and summarize a URL. Usage: /web <url>
 
 Clai can also read, search, list, and write files in your working directory.
 Just ask it to look at your code!`;
@@ -68,6 +71,17 @@ export function App({ initialMessage }: AppProps) {
     if (cfg.theme) setTheme(cfg.theme);
     return cfg;
   }, []);
+
+  // Load .claicontext file and append to system prompt
+  const contextFileContent = useMemo(() => loadContextFile(), []);
+  const baseSystemPrompt = config.systemPrompt;
+  const effectiveSystemPrompt = useMemo(() => {
+    if (contextFileContent) {
+      return baseSystemPrompt ? `${baseSystemPrompt}${contextFileContent}` : contextFileContent;
+    }
+    return baseSystemPrompt;
+  }, [baseSystemPrompt, contextFileContent]);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [streamSegments, setStreamSegments] = useState<MessageSegment[]>([]);
@@ -75,7 +89,7 @@ export function App({ initialMessage }: AppProps) {
   const [error, setError] = useState<string | undefined>();
   const [info, setInfo] = useState<string | undefined>();
   const [currentModel, setCurrentModel] = useState<string>(config.defaultModel ?? DEFAULT_MODEL);
-  const [systemPrompt, setSystemPrompt] = useState<string | undefined>(config.systemPrompt);
+  const [systemPrompt, setSystemPrompt] = useState<string | undefined>(effectiveSystemPrompt);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [totalUsage, setTotalUsage] = useState<TokenUsage>({
     inputTokens: 0,
@@ -147,6 +161,11 @@ export function App({ initialMessage }: AppProps) {
       abortRef.current?.abort();
     }
     if (appState === "idle") {
+      // Ctrl+Enter: add newline for multi-line input
+      if (key.ctrl && key.return) {
+        setInputValue((prev) => prev + "\n");
+        return;
+      }
       // PageUp/PageDown: scroll the conversation
       if (key.pageUp) {
         setScrollOffset((prev) => Math.min(prev + 3, Math.max(0, messages.length - 1)));
@@ -260,12 +279,23 @@ export function App({ initialMessage }: AppProps) {
         }
 
         const { usage } = result.value;
-        setTotalUsage((prev) => ({
-          inputTokens: prev.inputTokens + usage.inputTokens,
-          outputTokens: prev.outputTokens + usage.outputTokens,
-          totalCost: prev.totalCost + usage.totalCost,
-        }));
+        const newTotalUsage = {
+          inputTokens: totalUsage.inputTokens + usage.inputTokens,
+          outputTokens: totalUsage.outputTokens + usage.outputTokens,
+          totalCost: totalUsage.totalCost + usage.totalCost,
+        };
+        setTotalUsage(newTotalUsage);
         addLifetimeSpend(usage.totalCost);
+
+        // Check context limit and warn if approaching threshold
+        const { checkContextLimit } = await import("./lib/providers.js");
+        const contextWarning = checkContextLimit(
+          currentModel,
+          newTotalUsage.inputTokens + newTotalUsage.outputTokens,
+        );
+        if (contextWarning) {
+          setInfo(contextWarning);
+        }
 
         return { text: fullResponse, segments: localSegments };
       } catch (err: unknown) {
@@ -300,14 +330,34 @@ export function App({ initialMessage }: AppProps) {
 
   const handleSubmit = useCallback(
     async (value: string) => {
-      const trimmed = value.trim();
+      let trimmed = value.trim();
       if (!trimmed || appState === "streaming") return;
+
+      // Command aliases
+      const COMMAND_ALIASES: Record<string, string> = {
+        "/h": "/help",
+        "/m": "/model",
+        "/t": "/tokens",
+        "/k": "/keys",
+        "/c": "/clear",
+        "/s": "/save",
+        "/l": "/load",
+        "/e": "/edit",
+        "/p": "/permissions",
+      };
+
+      // Normalize aliases (only for commands without arguments)
+      const firstWord = trimmed.split(" ")[0];
+      if (firstWord && COMMAND_ALIASES[firstWord]) {
+        const rest = trimmed.slice(firstWord.length).trim();
+        trimmed = rest ? `${COMMAND_ALIASES[firstWord]} ${rest}` : COMMAND_ALIASES[firstWord]!;
+      }
 
       setInputValue("");
       setError(undefined);
       setInfo(undefined);
       setHistoryIndex(-1);
-      setInputHistory((prev) => [trimmed, ...prev.slice(0, 99)]);
+      setInputHistory((prev) => [value.trim(), ...prev.slice(0, 99)]); // Store original, not normalized
 
       // === Commands ===
 
@@ -358,14 +408,53 @@ export function App({ initialMessage }: AppProps) {
         return;
       }
 
+      if (trimmed === "/keys") {
+        const keysText = `Keyboard Shortcuts:
+
+  Ctrl+C         - Exit Clai
+  Escape         - Cancel streaming response
+  Ctrl+Enter     - Insert newline (multi-line input)
+  Enter          - Send message
+  Up/Down        - Navigate input history
+  PageUp/PageDown - Scroll conversation
+
+Input History:
+  - Last 100 inputs saved
+  - Use Up arrow to recall previous inputs
+  - Use Down arrow to move forward in history`;
+        addSystemMessage(keysText);
+        return;
+      }
+
       if (trimmed === "/tokens") {
         const lifetime = getLifetimeSpend();
-        const detail = `Token usage this session:
-  Input:  ${totalUsage.inputTokens.toLocaleString()} tokens
-  Output: ${totalUsage.outputTokens.toLocaleString()} tokens
-  Cost:   $${totalUsage.totalCost.toFixed(4)}
 
-Lifetime spend: $${lifetime.toFixed(4)}`;
+        // Helper to create visual progress bar
+        const makeBar = (value: number, max: number, width = 20): string => {
+          const percentage = Math.min(value / max, 1);
+          const filled = Math.round(percentage * width);
+          const empty = width - filled;
+          return "█".repeat(filled) + "░".repeat(empty);
+        };
+
+        const totalTokens = totalUsage.inputTokens + totalUsage.outputTokens;
+        const maxBarTokens = Math.max(totalTokens, 10000); // Min scale for visibility
+
+        // Get context limit info
+        const { checkContextLimit } = await import("./lib/providers.js");
+        const contextWarning = checkContextLimit(currentModel, totalTokens, 0.5); // Show at 50%
+
+        const detail = `Token Usage (This Session)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Input:  ${makeBar(totalUsage.inputTokens, maxBarTokens)} ${totalUsage.inputTokens.toLocaleString()} tokens
+  Output: ${makeBar(totalUsage.outputTokens, maxBarTokens)} ${totalUsage.outputTokens.toLocaleString()} tokens
+  Total:  ${totalTokens.toLocaleString()} tokens
+
+Cost Breakdown
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Session:  $${totalUsage.totalCost.toFixed(4)}
+  Lifetime: $${lifetime.toFixed(4)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${contextWarning ? `\n\n${contextWarning}` : ""}`;
         addSystemMessage(detail);
         return;
       }
@@ -740,6 +829,49 @@ Use /config save to persist current settings.`);
         return;
       }
 
+      if (trimmed === "/permissions" || trimmed.startsWith("/permissions ")) {
+        const args = trimmed.slice("/permissions".length).trim().split(/\s+/);
+
+        // List all permissions
+        if (args.length === 0 || !args[0]) {
+          const { getToolPermission } = await import("./lib/config.js");
+          const tools = ["read_file", "write_file", "list_dir", "search_files", "web_fetch"];
+          const permissions = tools
+            .map((tool) => `  ${tool.padEnd(15)} — ${getToolPermission(tool)}`)
+            .join("\n");
+
+          addSystemMessage(
+            `Tool permissions:\n\n${permissions}\n\nPermission levels:\n  always — Auto-approve (no prompts)\n  ask    — Require approval each time (default)\n  never  — Block tool completely\n\nUsage: /permissions <tool> <always|ask|never>\nExample: /permissions write_file always`,
+          );
+          return;
+        }
+
+        // Set permission
+        if (args.length === 2) {
+          const [toolName, permission] = args;
+          const validTools = ["read_file", "write_file", "list_dir", "search_files", "web_fetch"];
+          const validPermissions = ["always", "ask", "never"];
+
+          if (!validTools.includes(toolName!)) {
+            setError(`Unknown tool "${toolName}". Available: ${validTools.join(", ")}`);
+            return;
+          }
+
+          if (!validPermissions.includes(permission!)) {
+            setError(`Invalid permission "${permission}". Must be: always, ask, or never`);
+            return;
+          }
+
+          const { setToolPermission } = await import("./lib/config.js");
+          setToolPermission(toolName!, permission! as "always" | "ask" | "never");
+          addSystemMessage(`Set ${toolName} permission to: ${permission}`);
+          return;
+        }
+
+        setError("Usage: /permissions <tool> <always|ask|never>");
+        return;
+      }
+
       if (trimmed === "/compact") {
         if (messages.length < 4) {
           setError("Not enough messages to compact.");
@@ -860,6 +992,7 @@ Use /config save to persist current settings.`);
         onChange={handleInputChange}
         onSubmit={handleSubmit}
         isDisabled={appState === "streaming"}
+        hasNewlines={inputValue.includes("\n")}
       />
       <StatusBar
         messageCount={messages.length}

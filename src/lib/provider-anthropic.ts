@@ -13,6 +13,9 @@ import { TOOL_DEFINITIONS, executeTool } from "./tools.js";
 import type { ChatMessage, StreamEvent } from "./types.js";
 import type { AIProvider, StreamResult } from "./providers.js";
 import { getModelConfig, DEFAULT_MAX_TOKENS } from "./providers.js";
+import { getToolPermission } from "./config.js";
+import { checkRateLimit, retryWithBackoff } from "./retry.js";
+import { logToolCall, logToolApproved, logToolDenied, logSensitiveFileAccess } from "./audit.js";
 
 let _client: Anthropic | null = null;
 
@@ -67,17 +70,46 @@ export class AnthropicProvider implements AIProvider {
     let finalText = "";
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const stream = await getClient().messages.create(
-        {
-          model,
-          max_tokens: maxTokens,
-          messages: apiMessages,
-          tools: TOOL_DEFINITIONS,
-          ...(systemPrompt ? { system: systemPrompt } : {}),
-          stream: true,
-        },
-        { signal },
-      );
+      let stream: AsyncIterable<RawMessageStreamEvent>;
+
+      try {
+        stream = await retryWithBackoff(
+          async () => {
+            return await getClient().messages.create(
+              {
+                model,
+                max_tokens: maxTokens,
+                messages: apiMessages,
+                tools: TOOL_DEFINITIONS,
+                ...(systemPrompt ? { system: systemPrompt } : {}),
+                stream: true,
+              },
+              { signal },
+            );
+          },
+          {
+            maxRetries: 2,
+            initialDelay: 1000,
+            onRetry: (attempt, delay) => {
+              // Note: Can't yield from inside retry callback
+              console.error(`Retrying API call (attempt ${attempt}) after ${delay}ms...`);
+            },
+          },
+        );
+      } catch (error) {
+        // Check for rate limiting
+        const rateLimitInfo = checkRateLimit(error);
+        if (rateLimitInfo.isRateLimited) {
+          const waitTime = rateLimitInfo.retryAfter
+            ? `Wait ${rateLimitInfo.retryAfter} seconds`
+            : "Try again later";
+          yield {
+            type: "warning",
+            message: `Rate limit exceeded. ${waitTime}. ${rateLimitInfo.message}`,
+          };
+        }
+        throw error;
+      }
 
       const contentBlocks: ContentBlock[] = [];
       let currentToolJson = "";
@@ -135,8 +167,50 @@ export class AnthropicProvider implements AIProvider {
         if (block.type === "tool_use") {
           const toolInput = block.input as Record<string, unknown>;
 
-          // For write_file, ask for approval
-          if (block.name === "write_file") {
+          // Log tool call attempt
+          logToolCall(block.name, toolInput);
+
+          // Check tool permission from config
+          const permission = getToolPermission(block.name);
+
+          // If permission is "never", deny immediately
+          if (permission === "never") {
+            logToolDenied(block.name, toolInput);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: `Tool "${block.name}" is disabled by user configuration.`,
+              is_error: true,
+            });
+            yield {
+              type: "tool_done",
+              tool: {
+                name: block.name,
+                input: toolInput,
+                output: "Disabled by configuration",
+                isError: true,
+              },
+            };
+            continue;
+          }
+
+          // Check if tool requires approval based on permission setting and content
+          let needsApproval = permission === "ask";
+
+          // For write_file, always require approval unless permission is "always"
+          if (block.name === "write_file" && permission !== "always") {
+            needsApproval = true;
+          }
+
+          // For read_file, check if it's a sensitive file
+          let isSensitiveFile = false;
+          if (block.name === "read_file" && permission !== "always") {
+            const checkResult = executeTool(block.name, toolInput, false);
+            isSensitiveFile = checkResult.requiresApproval ?? false;
+            needsApproval = needsApproval || isSensitiveFile;
+          }
+
+          if (needsApproval) {
             let resolveApproval!: (approved: boolean) => void;
             const approvalPromise = new Promise<boolean>((r) => {
               resolveApproval = r;
@@ -152,10 +226,16 @@ export class AnthropicProvider implements AIProvider {
             const approved = await approvalPromise;
 
             if (!approved) {
+              logToolDenied(block.name, toolInput);
+              if (isSensitiveFile && typeof toolInput.path === "string") {
+                logSensitiveFileAccess(block.name, toolInput.path, false);
+              }
+
+              const action = block.name === "write_file" ? "write" : "read";
               toolResults.push({
                 type: "tool_result",
                 tool_use_id: block.id,
-                content: "User denied this file write.",
+                content: `User denied this file ${action}.`,
                 is_error: true,
               });
               yield {
@@ -169,6 +249,11 @@ export class AnthropicProvider implements AIProvider {
               };
               continue;
             }
+
+            // Log approval
+            if (isSensitiveFile && typeof toolInput.path === "string") {
+              logSensitiveFileAccess(block.name, toolInput.path, true);
+            }
           }
 
           yield {
@@ -176,7 +261,10 @@ export class AnthropicProvider implements AIProvider {
             tool: { name: block.name, input: toolInput },
           };
 
-          const result = executeTool(block.name, toolInput);
+          const result = executeTool(block.name, toolInput, true); // Skip approval check on execution
+
+          // Log tool execution result
+          logToolApproved(block.name, toolInput, !result.isError, result.output);
 
           yield {
             type: "tool_done",

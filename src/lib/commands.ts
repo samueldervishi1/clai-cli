@@ -12,8 +12,13 @@ export const COMMANDS: Command[] = [
   { name: "/exit", description: "Quit Clai" },
   { name: "/help", description: "Show available commands" },
   { name: "/image", description: "Send an image. Usage: /image <path> [question]" },
+  { name: "/keys", description: "Show keyboard shortcuts" },
   { name: "/load", description: "Load a saved conversation. /load to list" },
   { name: "/model", description: "Show or switch model. /model <name> to switch" },
+  {
+    name: "/permissions",
+    description: "Manage tool permissions. /permissions <tool> <always|ask|never>",
+  },
   { name: "/preset", description: "System prompt presets. /preset <name> or /preset save <name>" },
   { name: "/save", description: "Save conversation. /save [name]" },
   { name: "/system", description: "Set a system prompt. Usage: /system <prompt>" },

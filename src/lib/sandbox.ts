@@ -53,19 +53,31 @@ const BLOCKED_HOME_DIRS = [
   ".profile",
 ];
 
-// Blocked file patterns — never read or write these
+// Hard blocked file patterns — never read or write these (security-critical)
 const BLOCKED_PATTERNS = [
-  /\.env($|\.)/, // .env, .env.local, .env.production
   /\.pem$/, // SSL certificates / private keys
-  /\.key$/, // Private keys
   /\.p12$/, // PKCS12 certificates
   /id_rsa/, // SSH keys
   /id_ed25519/, // SSH keys
+  /id_ecdsa/, // SSH keys
+  /id_dsa/, // SSH keys
+  /\.ppk$/, // PuTTY private keys
+];
+
+// Sensitive file patterns — require user approval before access
+const SENSITIVE_PATTERNS = [
+  /\.env($|\.)/, // .env, .env.local, .env.production
+  /\.key$/, // Private keys
   /credentials/i, // Credential files
   /secrets?\.ya?ml$/i, // K8s secrets
   /\.npmrc$/, // npm auth tokens
   /\.netrc$/, // network credentials
   /\.git\/config$/, // git config (may contain tokens)
+  /\.git-credentials$/, // git credential store
+  /auth.*\.json$/i, // auth config files
+  /token/i, // files with "token" in name
+  /password/i, // files with "password" in name
+  /api[_-]?key/i, // API key files
 ];
 
 // Max file size to read (500KB)
@@ -73,6 +85,7 @@ const MAX_FILE_SIZE = 500 * 1024;
 
 export interface SandboxResult {
   allowed: boolean;
+  requiresApproval?: boolean; // If true, user must approve before access
   reason?: string;
 }
 
@@ -119,11 +132,22 @@ export function validatePath(filePath: string): SandboxResult {
     }
   }
 
-  // Block sensitive file patterns
+  // Block critical file patterns (never allow)
   const name = basename(absPath);
   for (const pattern of BLOCKED_PATTERNS) {
     if (pattern.test(name) || pattern.test(absPath)) {
-      return { allowed: false, reason: "Access denied: sensitive file pattern" };
+      return { allowed: false, reason: "Access denied: critical security file" };
+    }
+  }
+
+  // Check sensitive file patterns (require approval)
+  for (const pattern of SENSITIVE_PATTERNS) {
+    if (pattern.test(name) || pattern.test(absPath)) {
+      return {
+        allowed: true,
+        requiresApproval: true,
+        reason: "Warning: sensitive file detected",
+      };
     }
   }
 

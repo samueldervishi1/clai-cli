@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync } from "node:fs";
 import { resolve, relative, join, dirname } from "node:path";
 import { validatePath, validateFileSize, getWorkingDirectory } from "./sandbox.js";
+import { loadIgnorePatterns, shouldIgnoreFile } from "./context-files.js";
 import type Anthropic from "@anthropic-ai/sdk";
 import { execSync } from "node:child_process";
 
@@ -95,14 +96,19 @@ export const TOOL_DEFINITIONS: Anthropic.Tool[] = [
 export interface ToolResult {
   output: string;
   isError: boolean;
+  requiresApproval?: boolean; // If true, tool needs user approval before execution
 }
 
-export function executeTool(name: string, input: Record<string, unknown>): ToolResult {
+export function executeTool(
+  name: string,
+  input: Record<string, unknown>,
+  skipApprovalCheck = false,
+): ToolResult {
   switch (name) {
     case "read_file": {
       if (typeof input.path !== "string")
         return { output: "Missing or invalid 'path'", isError: true };
-      return readFile(input.path);
+      return readFile(input.path, skipApprovalCheck);
     }
     case "list_dir": {
       const dir = typeof input.path === "string" ? input.path : ".";
@@ -132,13 +138,23 @@ export function executeTool(name: string, input: Record<string, unknown>): ToolR
   }
 }
 
-function readFile(filePath: string): ToolResult {
+function readFile(filePath: string, skipApprovalCheck = false): ToolResult {
   const cwd = getWorkingDirectory();
   const absPath = resolve(cwd, filePath);
 
   const pathCheck = validatePath(absPath);
   if (!pathCheck.allowed) {
     return { output: pathCheck.reason!, isError: true };
+  }
+
+  // If file is sensitive and approval check is not skipped, request approval
+  if (pathCheck.requiresApproval && !skipApprovalCheck) {
+    const relPath = relative(cwd, absPath);
+    return {
+      output: `File "${relPath}" may contain sensitive data (credentials, secrets, etc.)`,
+      isError: false,
+      requiresApproval: true,
+    };
   }
 
   const sizeCheck = validateFileSize(absPath);
@@ -196,8 +212,11 @@ function searchFiles(pattern: string, dirPath: string): ToolResult {
   }
 
   try {
+    // Load .claiignore patterns
+    const ignorePatterns = loadIgnorePatterns();
+
     const matches: string[] = [];
-    searchRecursive(absPath, pattern, matches, cwd, 0);
+    searchRecursive(absPath, pattern, matches, cwd, 0, ignorePatterns);
 
     if (matches.length === 0) {
       return { output: `No files matching "${pattern}" found.`, isError: false };
@@ -219,6 +238,7 @@ function searchRecursive(
   matches: string[],
   cwd: string,
   depth: number,
+  ignorePatterns: string[] = [],
 ): void {
   if (depth > 5 || matches.length >= 50) return; // Limit depth and results
 
@@ -228,15 +248,20 @@ function searchRecursive(
       if (entry === "node_modules" || entry === ".git" || entry === "dist") continue;
 
       const fullPath = join(dir, entry);
+      const relPath = relative(cwd, fullPath);
+
+      // Check if path should be ignored per .claiignore
+      if (shouldIgnoreFile(relPath, ignorePatterns)) continue;
+
       const pathCheck = validatePath(fullPath);
       if (!pathCheck.allowed) continue;
 
       try {
         const stat = statSync(fullPath);
         if (stat.isDirectory()) {
-          searchRecursive(fullPath, pattern, matches, cwd, depth + 1);
+          searchRecursive(fullPath, pattern, matches, cwd, depth + 1, ignorePatterns);
         } else if (matchesPattern(entry, pattern)) {
-          matches.push(relative(cwd, fullPath));
+          matches.push(relPath);
         }
       } catch {
         // Skip inaccessible entries
