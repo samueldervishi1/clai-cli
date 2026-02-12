@@ -1,6 +1,7 @@
 import { Box, Text, useStdout } from "ink";
 import { getTheme } from "../lib/theme.js";
-import { DEFAULT_MODEL } from "../lib/claude.js";
+import { DEFAULT_MODEL, MODEL_DISPLAY } from "../lib/claude.js";
+import { getModelConfig } from "../lib/providers.js";
 
 interface HeaderProps {
   version: string;
@@ -11,7 +12,10 @@ export function Header({ version, model = DEFAULT_MODEL }: HeaderProps) {
   const theme = getTheme();
   const { stdout } = useStdout();
   const termWidth = Math.max((stdout?.columns ?? 80) - 2, 10);
-  const modelDisplay = model.includes("haiku") ? "Haiku 4.5" : "Sonnet 4.5";
+
+  // Get proper display name for current model
+  const modelConfig = getModelConfig(model);
+  const modelDisplay = modelConfig?.displayName ?? MODEL_DISPLAY[model] ?? model;
 
   return (
     <Box flexDirection="column" paddingX={1}>

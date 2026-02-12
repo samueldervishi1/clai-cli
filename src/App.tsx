@@ -374,29 +374,57 @@ Lifetime spend: $${lifetime.toFixed(4)}`;
         const arg = trimmed.slice("/model".length).trim().toLowerCase();
         if (!arg) {
           // Show current model and list available ones
-          const currentName = MODEL_DISPLAY[currentModel] ?? currentModel;
-          const list = Object.entries(MODELS)
-            .map(([name, id]) => {
-              const display = MODEL_DISPLAY[id] ?? id;
-              const marker = id === currentModel ? " (active)" : "";
-              return `  ${name} — ${display}${marker}`;
+          const { getModelConfig } = await import("./lib/providers.js");
+          const currentConfig = getModelConfig(currentModel);
+          const currentName = currentConfig?.displayName ?? currentModel;
+
+          const { getAvailableModels } = await import("./lib/claude.js");
+          const available = getAvailableModels();
+
+          const anthropicList = available.anthropic
+            .map((m) => {
+              const marker = m.id === currentModel ? " (active)" : "";
+              const shortName = Object.keys(MODELS).find((k) => MODELS[k]?.id === m.id);
+              return `  ${shortName} — ${m.displayName}${marker}`;
             })
             .join("\n");
+
+          const groqList = available.groq
+            .map((m) => {
+              const marker = m.id === currentModel ? " (active)" : "";
+              const shortName = Object.keys(MODELS).find((k) => MODELS[k]?.id === m.id);
+              return `  ${shortName} — ${m.displayName}${marker}`;
+            })
+            .join("\n");
+
           addSystemMessage(
-            `Current model: ${currentName}\n\nAvailable models:\n${list}\n\nUsage: /model <name>`,
+            `Current model: ${currentName}\n\nAnthropic Models:\n${anthropicList}\n\nGroq Models (fast, free tier):\n${groqList}\n\nUsage: /model <name>`,
           );
           return;
         }
-        // Match by short name (e.g. "haiku", "sonnet")
+        // Match by short name
         const match = Object.entries(MODELS).find(([name]) => name === arg);
         if (!match) {
           const names = Object.keys(MODELS).join(", ");
           setError(`Unknown model "${arg}". Available: ${names}`);
           return;
         }
-        const [, modelId] = match;
-        setCurrentModel(modelId);
-        addSystemMessage(`Switched to ${MODEL_DISPLAY[modelId]}`);
+        const [modelName, modelConfig] = match;
+
+        // Check if switching to Groq model - prompt for API key if needed
+        if (modelConfig.provider === "groq" && !process.env.GROQ_API_KEY) {
+          try {
+            const { ensureGroqApiKey } = await import("./lib/api-key.js");
+            await ensureGroqApiKey();
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            setError(`Failed to configure Groq API key: ${msg}`);
+            return;
+          }
+        }
+
+        setCurrentModel(modelConfig.id);
+        addSystemMessage(`Switched to ${modelConfig.displayName}`);
         return;
       }
 

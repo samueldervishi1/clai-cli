@@ -305,6 +305,27 @@ function webFetch(url: string): ToolResult {
     };
   }
 
+  // SSRF Protection: Block private IPs and localhost
+  const hostname = parsed.hostname.toLowerCase();
+  const privatePatterns = [
+    /^localhost$/i,
+    /^127\./,
+    /^10\./,
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+    /^192\.168\./,
+    /^169\.254\./, // link-local
+    /^::1$/, // IPv6 localhost
+    /^fe80:/i, // IPv6 link-local
+    /^fc00:/i, // IPv6 private
+  ];
+
+  if (privatePatterns.some((pattern) => pattern.test(hostname))) {
+    return {
+      output: "Access to private networks and localhost is not allowed",
+      isError: true,
+    };
+  }
+
   try {
     //Use curl for simplicity - available on virtually all systems
     const result = execSync(
